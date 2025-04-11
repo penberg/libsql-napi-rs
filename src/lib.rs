@@ -75,54 +75,12 @@ impl Database {
   #[napi]
   pub fn transaction(&self, env: Env, func: napi::JsFunction) -> Result<napi::JsFunction> {
     let conn = self.conn.clone();
-
-    let default = transaction(env.clone(), &func, conn.clone(), "")?;
-    let deferred = transaction(env.clone(), &func, conn.clone(), "DEFERRED")?;
-    let immediate = transaction(env.clone(), &func, conn.clone(), "IMMEDIATE")?;
-    let exclusive = transaction(env.clone(), &func, conn.clone(), "EXCLUSIVE")?;
-
-    let default_obj = env.create_object()?;
-    default_obj.set("value", default)?;
-
-    let deferred_obj = env.create_object()?;
-    deferred_obj.set("value", deferred)?;
-
-    let immediate_obj = env.create_object()?;
-    immediate_obj.set("value", immediate)?;
-
-    let exclusive_obj = env.create_object()?;
-    exclusive_obj.set("value", exclusive)?;
-
-    let mut props = env.create_object()?;
-    props.set("default", default_obj)?;
-    props.set("deferred", deferred_obj)?;
-    props.set("immediate", immediate_obj)?;
-    props.set("exclusive", exclusive_obj)?;
-    props.set("database", env.get_undefined()?)?;
-
-    let property_names = props.get_property_names()?;
-    for name in property_names {
-      let prop_name = name.as_string()?;
-      let prop_value = props.get(&prop_name)?;
-
-      default_obj.set(&prop_name, prop_value)?;
-      deferred_obj.set(&prop_name, prop_value)?;
-      immediate_obj.set(&prop_name, prop_value)?;
-      exclusive_obj.set(&prop_name, prop_value)?;
-    }
-
-    let descriptor = PropertyDescriptor::new(
-      env,
-      "database",
-      env.get_undefined()?,
-      napi::PropertyAttributes::default() | napi::PropertyAttributes::ENUMERABLE,
-    );
-    default_obj.define_property(env, descriptor)?;
-    deferred_obj.define_property(env, descriptor.clone())?;
-    immediate_obj.define_property(env, descriptor.clone())?;
-    exclusive_obj.define_property(env, descriptor)?;
-
-    Ok(default_obj)
+    
+    // Create a simple transaction function with empty mode
+    let tx_function = transaction(env, &func, conn, "")?;
+    
+    // For now, just return the basic transaction function
+    Ok(tx_function)
   }
 
   #[napi]
