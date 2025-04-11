@@ -231,20 +231,19 @@ fn convert_params(
   }
 }
 
-fn convert_params_array(env: &Env, array: napi::JsObject) -> Result<libsql::params::Params> {
+fn convert_params_array(env: &Env, object: napi::JsObject) -> Result<libsql::params::Params> {
   let mut params = vec![];
-  let length = array
-    .get_named_property::<napi::JsNumber>("length")?
-    .get_uint32()?;
-
+  
+  // Get array length using the proper method
+  let length = object.get_array_length()?;
+  
+  // Get array elements
   for i in 0..length {
-    let key = i.to_string();
-    if let Ok(value) = array.get_named_property::<napi::JsUnknown>(&key) {
-      let value = js_value_to_value(env, value)?;
-      params.push(value);
-    }
+    let element = object.get_element::<napi::JsUnknown>(i)?;
+    let value = js_value_to_value(env, element)?;
+    params.push(value);
   }
-
+  
   Ok(libsql::params::Params::Positional(params))
 }
 
