@@ -6,6 +6,11 @@
 export interface Options {
   timeout?: number
 }
+export interface RunResult {
+  changes: number
+  duration: number
+  lastInsertRowid: number
+}
 export declare class Database {
   constructor(path: string, opts?: Options | undefined | null)
   prepare(sql: string): Statement
@@ -24,4 +29,6 @@ export declare class Database {
   defaultSafeIntegers(toggle: boolean): void
   unsafeMode(): void
 }
-export declare class Statement { }
+export declare class Statement {
+  run(params?: unknown | undefined | null): RunResult
+}

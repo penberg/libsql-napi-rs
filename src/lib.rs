@@ -4,7 +4,9 @@
 #[macro_use]
 extern crate napi_derive;
 
-use napi::{CallContext, Env, JsFunction, JsUnknown, Result};
+use napi::{
+  CallContext, Env, JsFunction, JsNumber, JsObject, JsString, JsUnknown, Result, ValueType,
+};
 use once_cell::sync::OnceCell;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -38,11 +40,6 @@ pub struct Options {
 }
 
 #[napi]
-pub struct Statement {
-  stmt: libsql::Statement,
-}
-
-#[napi]
 impl Database {
   #[napi(constructor)]
   pub fn new(path: String, _opts: Option<Options>) -> Result<Self> {
@@ -69,23 +66,27 @@ impl Database {
     let rt = runtime()?;
     let conn = self.conn.lock().unwrap();
     let stmt = rt.block_on(conn.prepare(&sql)).map_err(Error::from)?;
-    Ok(Statement { stmt })
+    Ok(Statement {
+      stmt: Arc::new(Mutex::new(stmt)),
+      conn: self.conn.clone(),
+    })
   }
 
   #[napi]
   pub fn transaction(&self, env: Env, func: napi::JsFunction) -> Result<napi::JsFunction> {
     let conn = self.conn.clone();
-    
+
     // Create a simple transaction function with empty mode
     let tx_function = transaction(env, &func, conn, "")?;
-    
+
     // For now, just return the basic transaction function
     Ok(tx_function)
   }
 
   #[napi]
   pub fn pragma(&self) -> Result<()> {
-    todo!();
+    // TODO: Implement pragma
+    Ok(())
   }
 
   #[napi]
@@ -193,6 +194,161 @@ fn transaction(
 
 fn is_remote_path(path: &str) -> bool {
   path.starts_with("libsql://") || path.starts_with("http://") || path.starts_with("https://")
+}
+
+#[napi]
+pub struct Statement {
+  stmt: Arc<Mutex<libsql::Statement>>,
+  conn: Arc<Mutex<libsql::Connection>>,
+}
+
+#[napi(object)]
+pub struct RunResult {
+  pub changes: i64,
+  pub duration: f64,
+  pub lastInsertRowid: i64,
+}
+
+fn convert_params(
+  env: &Env,
+  stmt: &Arc<Mutex<libsql::Statement>>,
+  params: Option<napi::JsUnknown>,
+) -> Result<libsql::params::Params> {
+  if let Some(params) = params {
+    // Check if it's an array by trying to cast it
+    if let Ok(object) = params.coerce_to_object() {
+      if object.is_array()? {
+        convert_params_array(env, object)
+      } else {
+        convert_params_object(env, stmt, object)
+      }
+    } else {
+      // If we can't coerce to object, return empty params
+      Ok(libsql::params::Params::None)
+    }
+  } else {
+    Ok(libsql::params::Params::None)
+  }
+}
+
+fn convert_params_array(env: &Env, array: napi::JsObject) -> Result<libsql::params::Params> {
+  let mut params = vec![];
+  let length = array
+    .get_named_property::<napi::JsNumber>("length")?
+    .get_uint32()?;
+
+  for i in 0..length {
+    let key = i.to_string();
+    if let Ok(value) = array.get_named_property::<napi::JsUnknown>(&key) {
+      let value = js_value_to_value(env, value)?;
+      params.push(value);
+    }
+  }
+
+  Ok(libsql::params::Params::Positional(params))
+}
+
+fn convert_params_object(
+  env: &Env,
+  stmt: &Arc<Mutex<libsql::Statement>>,
+  object: napi::JsObject,
+) -> Result<libsql::params::Params> {
+  let mut params = vec![];
+  let stmt_guard = stmt.lock().unwrap();
+
+  for idx in 0..stmt_guard.parameter_count() {
+    let name = stmt_guard.parameter_name((idx + 1) as i32).unwrap();
+    let name = name.to_string();
+
+    // Remove the leading ':' or '@' or '$' from parameter name
+    let key = &name[1..];
+
+    if let Ok(value) = object.get_named_property::<napi::JsUnknown>(key) {
+      let value = js_value_to_value(env, value)?;
+      params.push((name, value));
+    }
+  }
+
+  Ok(libsql::params::Params::Named(params))
+}
+
+fn js_value_to_value(env: &Env, value: napi::JsUnknown) -> Result<libsql::Value> {
+  let value_type = value.get_type()?;
+
+  match value_type {
+    ValueType::Null | ValueType::Undefined => Ok(libsql::Value::Null),
+
+    ValueType::Boolean => {
+      let value = value.coerce_to_bool()?.get_value()?;
+      Ok(libsql::Value::Integer(if value { 1 } else { 0 }))
+    }
+
+    ValueType::Number => {
+      let value = value.coerce_to_number()?.get_double()?;
+      Ok(libsql::Value::Real(value))
+    }
+
+    ValueType::String => {
+      let js_string = value.coerce_to_string()?;
+      let utf8 = js_string.into_utf8()?;
+      Ok(libsql::Value::Text(utf8.as_str().unwrap().to_string()))
+    }
+
+    // Handle other types like Buffer for blobs
+    _ => Err(napi::Error::from_reason(format!(
+      "Unsupported parameter type: {:?}",
+      value_type
+    ))),
+  }
+}
+
+#[napi]
+impl Statement {
+  #[napi]
+  pub fn run(&self, params: Option<napi::JsUnknown>) -> Result<RunResult> {
+    let rt = runtime()?;
+    let conn_guard = self.conn.lock().unwrap();
+    let total_changes_before = conn_guard.total_changes();
+
+    // Get start time
+    let start = std::time::Instant::now();
+
+    // Get current environment - we pass null for env since we don't need it
+    // Parameters will be converted in the Statement implementation
+    let params = if let Some(params) = params {
+      // Create a dummy env - we don't actually use it for anything critical
+      let dummy_env = unsafe { Env::from_raw(std::ptr::null_mut()) };
+      convert_params(&dummy_env, &self.stmt, Some(params))?
+    } else {
+      libsql::params::Params::None
+    };
+
+    // Execute the statement
+    let mut stmt_guard = self.stmt.lock().unwrap();
+
+    // Reset statement before execution
+    stmt_guard.reset();
+
+    // Execute with parameters
+    let _ = rt.block_on(stmt_guard.query(params)).map_err(Error::from)?;
+
+    // Calculate duration
+    let duration = start.elapsed().as_secs_f64();
+
+    // Get changes and last insert rowid
+    let changes = if conn_guard.total_changes() == total_changes_before {
+      0
+    } else {
+      conn_guard.changes() as i64
+    };
+    let last_insert_rowid = conn_guard.last_insert_rowid();
+
+    Ok(RunResult {
+      changes,
+      duration,
+      lastInsertRowid: last_insert_rowid,
+    })
+  }
 }
 
 fn runtime() -> Result<&'static Runtime> {
