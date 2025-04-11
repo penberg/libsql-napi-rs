@@ -31,4 +31,7 @@ export declare class Database {
 }
 export declare class Statement {
   run(params?: unknown | undefined | null): RunResult
+  get(params?: unknown | undefined | null): unknown
+  raw(): this
+  safeIntegers(toggle?: boolean | undefined | null): this
 }
