@@ -31,7 +31,7 @@ impl From<libsql::Error> for Error {
 pub struct Database {
   path: String,
   db: libsql::Database,
-  conn: Arc<Mutex<libsql::Connection>>,
+  conn: Option<Arc<Mutex<libsql::Connection>>>,
   default_safe_integers: RefCell<bool>,
   memory: bool,
 }
@@ -39,6 +39,17 @@ pub struct Database {
 #[napi(object)]
 pub struct Options {
   pub timeout: Option<u32>,
+}
+
+#[napi]
+impl Database {
+    // ...
+}
+
+impl Drop for Database {
+    fn drop(&mut self) {
+        self.conn = None;
+    }
 }
 
 #[napi]
@@ -63,7 +74,7 @@ impl Database {
     Ok(Database {
       path,
       db,
-      conn: Arc::new(Mutex::new(conn)),
+      conn: Some(Arc::new(Mutex::new(conn))),
       default_safe_integers,
       memory,
     })
@@ -72,11 +83,11 @@ impl Database {
   #[napi]
   pub fn prepare(&self, sql: String) -> Result<Statement> {
     let rt = runtime()?;
-    let conn = self.conn.lock().unwrap();
+    let conn = self.conn.as_ref().expect("Database is closed").lock().unwrap();
     let stmt = rt.block_on(conn.prepare(&sql)).map_err(Error::from)?;
     Ok(Statement {
       stmt: Arc::new(Mutex::new(stmt)),
-      conn: self.conn.clone(),
+      conn: self.conn.clone().expect("Database is closed"),
       safe_ints: RefCell::new(false),
       raw: RefCell::new(false),
     })
@@ -84,7 +95,10 @@ impl Database {
 
   #[napi]
   pub fn transaction(&self, env: Env, func: napi::JsFunction) -> Result<napi::JsFunction> {
-    let conn = self.conn.clone();
+    let conn = match &self.conn {
+    Some(conn) => conn.clone(),
+    None => return Err(napi::Error::from_reason("Database is closed")),
+  };
 
     // Create a simple transaction function with empty mode
     let tx_function = transaction(env, &func, conn, "")?;
@@ -137,8 +151,11 @@ impl Database {
   #[napi]
   pub fn exec(&self, sql: String) -> Result<()> {
     let rt = runtime()?;
-    let conn = self.conn.lock().unwrap();
-    let _ = rt.block_on(conn.execute_batch(&sql)).map_err(Error::from)?;
+    let conn = match &self.conn {
+      Some(conn) => conn.clone(),
+      None => return Err(napi::Error::from_reason("Database is closed")),
+    };
+    let _ = rt.block_on(conn.lock().unwrap().execute_batch(&sql)).map_err(Error::from)?;
     Ok(())
   }
 
@@ -148,7 +165,8 @@ impl Database {
   }
 
   #[napi]
-  pub fn close(&self) -> Result<()> {
+  pub fn close(&mut self) -> Result<()> {
+    self.conn = None;
     Ok(())
   }
 
