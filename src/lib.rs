@@ -326,10 +326,8 @@ fn js_value_to_value(value: napi::JsUnknown) -> Result<libsql::Value> {
     }
 
     // Handle other types like Buffer for blobs
-    _ => Err(napi::Error::from_reason(format!(
-      "Unsupported parameter type: {:?}",
-      value_type
-    ))),
+    _ => Err(napi::Error::from_reason("SQLite3 can only bind numbers, strings, bigints, buffers, and null")),
+
   }
 }
 
