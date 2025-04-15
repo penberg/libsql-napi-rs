@@ -9,7 +9,7 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use napi::{CallContext, Env, JsFunction, JsObject, JsUnknown, Result, ValueType};
+use napi::{CallContext, Env, JsFunction, JsObject, JsTypeError, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
@@ -43,21 +43,21 @@ pub struct Options {
 
 #[napi]
 impl Database {
-    // ...
+  // ...
 }
 
 impl Drop for Database {
-    fn drop(&mut self) {
-        self.conn = None;
-    }
+  fn drop(&mut self) {
+    self.conn = None;
+  }
 }
 
 #[napi]
 impl Database {
-    #[napi(getter)]
-    pub fn memory(&self) -> bool {
-        self.memory
-    }
+  #[napi(getter)]
+  pub fn memory(&self) -> bool {
+    self.memory
+  }
   #[napi(constructor)]
   pub fn new(path: String, _opts: Option<Options>) -> Result<Self> {
     let rt = runtime()?;
@@ -81,19 +81,18 @@ impl Database {
   }
 
   #[napi]
-  pub fn prepare(&self, sql: String) -> Result<Statement> {
+  pub fn prepare(&self, env: Env, sql: String) -> Result<Statement> {
     let rt = runtime()?;
-    let conn = match self.conn.as_ref() {
-    Some(conn) => conn.lock().unwrap(),
-    None => return Err(napi::Error::from_reason("Database is closed")),
-};
-    let stmt = rt.block_on(conn.prepare(&sql)).map_err(Error::from)?;
+    let conn = match &self.conn {
+      Some(conn) => conn.clone(),
+      None => return Err(throw_database_closed_error(&env).into()),
+    };
+    let stmt = rt
+      .block_on(conn.lock().unwrap().prepare(&sql))
+      .map_err(Error::from)?;
     Ok(Statement {
       stmt: Arc::new(Mutex::new(stmt)),
-      conn: match self.conn.clone() {
-    Some(conn) => conn,
-    None => return Err(napi::Error::from_reason("Database is closed")),
-},
+      conn: conn.clone(),
       safe_ints: RefCell::new(false),
       raw: RefCell::new(false),
     })
@@ -101,10 +100,11 @@ impl Database {
 
   #[napi]
   pub fn transaction(&self, env: Env, func: napi::JsFunction) -> Result<napi::JsFunction> {
+    let rt = runtime()?;
     let conn = match &self.conn {
-    Some(conn) => conn.clone(),
-    None => return Err(napi::Error::from_reason("Database is closed")),
-  };
+      Some(conn) => conn.clone(),
+      None => return Err(throw_database_closed_error(&env).into()),
+    };
 
     // Create a simple transaction function with empty mode
     let tx_function = transaction(env, &func, conn, "")?;
@@ -155,13 +155,15 @@ impl Database {
   }
 
   #[napi]
-  pub fn exec(&self, sql: String) -> Result<()> {
+  pub fn exec(&self, env: Env, sql: String) -> Result<()> {
     let rt = runtime()?;
     let conn = match &self.conn {
       Some(conn) => conn.clone(),
-      None => return Err(napi::Error::from_reason("Database is closed")),
+      None => return Err(throw_database_closed_error(&env).into()),
     };
-    let _ = rt.block_on(conn.lock().unwrap().execute_batch(&sql)).map_err(Error::from)?;
+    let _ = rt
+      .block_on(conn.lock().unwrap().execute_batch(&sql))
+      .map_err(Error::from)?;
     Ok(())
   }
 
@@ -228,6 +230,13 @@ fn transaction(
 
 fn is_remote_path(path: &str) -> bool {
   path.starts_with("libsql://") || path.starts_with("http://") || path.starts_with("https://")
+}
+
+fn throw_database_closed_error(env: &Env) -> napi::Error {
+  let msg = "Database is closed";
+  let err = napi::Error::new(napi::Status::InvalidArg, msg.to_string());
+  env.throw_type_error(&msg, None)?;
+  err
 }
 
 #[napi]
