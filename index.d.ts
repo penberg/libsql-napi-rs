@@ -31,6 +31,7 @@ export declare class Database {
   unsafeMode(): void
 }
 export declare class Statement {
+  columns(): unknown[]
   iterate(params?: unknown | undefined | null): object
   run(params?: unknown | undefined | null): RunResult
   all(params?: unknown | undefined | null): unknown[]

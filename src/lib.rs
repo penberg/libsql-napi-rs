@@ -364,6 +364,19 @@ fn map_value(value: JsUnknown) -> Result<libsql::Value> {
 #[napi]
 impl Statement {
     #[napi]
+    pub fn columns(&self, env: Env) -> Result<Array> {
+        let rt = runtime()?;
+        let stmt = rt.block_on(self.stmt.lock());
+        let columns = stmt.columns();
+        let mut js_array = env.create_array(columns.len() as u32)?;
+        for (i, col) in columns.iter().enumerate() {
+            let mut js_obj = env.create_object()?;
+            js_obj.set_named_property("name", env.create_string(col.name())?)?;
+            js_array.set(i as u32, js_obj)?;
+        }
+        Ok(js_array)
+    }
+    #[napi]
     pub fn iterate(&self, env: Env, params: Option<napi::JsUnknown>) -> Result<napi::JsObject> {
         let rt = runtime()?;
         // Get safe_ints and raw flags
