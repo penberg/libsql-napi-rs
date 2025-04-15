@@ -9,7 +9,6 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use napi::bindgen_prelude::Array;
 use napi::{CallContext, Env, JsFunction, JsObject, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
@@ -391,14 +390,9 @@ impl Statement {
     match row_result {
       Some(row) => {
         if raw {
-          // Create an actual array
-          let column_count = rows.column_count() as u32;
-          let js_array = env.create_array(column_count)?;
-
           // Convert row to array
           let js_array = convert_row_raw(&env, safe_ints, &rows, &row)?;
-
-          Ok(js_array.coerce_to_object()?.into_unknown())
+          Ok(js_array)
         } else {
           // Create an object
           let mut js_object = env.create_object()?;
@@ -496,7 +490,7 @@ fn convert_row_raw(
   safe_ints: bool,
   rows: &libsql::Rows,
   row: &libsql::Row,
-) -> Result<Array> {
+) -> Result<JsUnknown> {
   let column_count = rows.column_count();
   let mut js_array = env.create_array(column_count as u32)?;
 
@@ -507,22 +501,25 @@ fn convert_row_raw(
     };
 
     // Create appropriate JS value based on SQLite value type
-    let js_value: JsObject = match value {
-      libsql::Value::Null => env.get_null()?.coerce_to_object()?,
+    let js_value: JsUnknown = match value {
+      libsql::Value::Null => env.get_null()?.into_unknown(),
       libsql::Value::Integer(v) => {
         if safe_ints && (v > i32::MAX as i64 || v < i32::MIN as i64) {
-          env.create_int64(v)?.coerce_to_object()?
+          env.create_int64(v)?.into_unknown()
         } else {
-          env.create_double(v as f64)?.coerce_to_object()?
+          env.create_double(v as f64)?.into_unknown()
         }
       }
-      libsql::Value::Real(v) => env.create_double(v)?.coerce_to_object()?,
-      libsql::Value::Text(v) => env.create_string(&v)?.coerce_to_object()?,
-      libsql::Value::Blob(v) => todo!(),
+      libsql::Value::Real(v) => env.create_double(v)?.into_unknown(),
+      libsql::Value::Text(v) => env.create_string(&v)?.into_unknown(),
+      libsql::Value::Blob(v) => {
+        let buffer = env.create_buffer_with_data(v.clone())?;
+        buffer.into_unknown()
+      }
     };
 
     js_array.set(idx as u32, js_value)?;
   }
-
-  Ok(js_array)
+  let ret = js_array.coerce_to_object()?;
+  Ok(ret.into_unknown())
 }
