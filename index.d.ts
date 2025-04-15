@@ -31,8 +31,10 @@ export declare class Database {
   unsafeMode(): void
 }
 export declare class Statement {
+  iterate(params?: unknown | undefined | null): object
   run(params?: unknown | undefined | null): RunResult
   get(params?: unknown | undefined | null): unknown
   raw(): this
   safeIntegers(toggle?: boolean | undefined | null): this
 }
+export declare class StatementRows { }
