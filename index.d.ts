@@ -34,6 +34,7 @@ export declare class Statement {
   iterate(params?: unknown | undefined | null): object
   run(params?: unknown | undefined | null): RunResult
   all(params?: unknown | undefined | null): unknown[]
+  pluck(pluck?: boolean | undefined | null): this
   get(params?: unknown | undefined | null): unknown
   raw(raw?: boolean | undefined | null): this
   safeIntegers(toggle?: boolean | undefined | null): this

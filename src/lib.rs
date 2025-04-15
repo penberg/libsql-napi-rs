@@ -97,6 +97,7 @@ impl Database {
       conn: conn.clone(),
       safe_ints: RefCell::new(*self.default_safe_integers.borrow()),
       raw: RefCell::new(false),
+      pluck: RefCell::new(false),
     })
   }
 
@@ -227,6 +228,7 @@ pub struct Statement {
   conn: Arc<tokio::sync::Mutex<libsql::Connection>>,
   safe_ints: RefCell<bool>,
   raw: RefCell<bool>,
+  pluck: RefCell<bool>,
 }
 
 #[napi(object)]
@@ -408,6 +410,7 @@ impl Statement {
 
     let mut js_array = env.create_array(0)?;
     let mut idx = 0u32;
+    let pluck = *self.pluck.borrow();
     while let Some(row) = rt.block_on(rows.next()).map_err(Error::from)? {
       let js_value = if raw {
         convert_row_raw(&env, safe_ints, &rows, &row)?
@@ -416,10 +419,36 @@ impl Statement {
         convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
         js_object.into_unknown()
       };
-      js_array.set(idx, js_value)?;
+      // Pluck support: if pluck is enabled, extract the first column from the result
+      let final_value = if pluck {
+        if raw {
+          // js_value is an array/object, get index 0
+          let arr = js_value.coerce_to_object()?;
+          arr.get_element::<napi::JsUnknown>(0)?
+        } else {
+          // js_value is an object, get the first property
+          let obj = js_value.coerce_to_object()?;
+          let keys = obj.get_property_names()?;
+          if keys.get_array_length()? > 0 {
+            let key = keys.get_element::<napi::JsString>(0)?;
+            obj.get_property(key)?
+          } else {
+            env.get_undefined()?.into_unknown()
+          }
+        }
+      } else {
+        js_value
+      };
+      js_array.set(idx, final_value)?;
       idx += 1;
     }
     Ok(js_array)
+  }
+
+  #[napi]
+  pub fn pluck(&self, pluck: Option<bool>) -> Result<&Self> {
+    self.pluck.replace(pluck.unwrap_or(true));
+    Ok(self)
   }
 
   #[napi]
