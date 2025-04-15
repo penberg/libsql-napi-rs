@@ -6,12 +6,12 @@ extern crate napi_derive;
 
 use std::{
   cell::RefCell,
-  sync::{Arc, Mutex},
+  sync::{Arc},
 };
 
-use napi::{CallContext, Env, JsFunction, JsObject, JsTypeError, JsUnknown, Result, ValueType};
+use napi::{CallContext, Env, JsFunction, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
-use tokio::runtime::Runtime;
+use tokio::{sync::Mutex, runtime::Runtime};
 
 struct Error(libsql::Error);
 
@@ -31,7 +31,7 @@ impl From<libsql::Error> for Error {
 pub struct Database {
   path: String,
   db: libsql::Database,
-  conn: Option<Arc<Mutex<libsql::Connection>>>,
+  conn: Option<Arc<tokio::sync::Mutex<libsql::Connection>>>,
   default_safe_integers: RefCell<bool>,
   memory: bool,
 }
@@ -87,9 +87,11 @@ impl Database {
       Some(conn) => conn.clone(),
       None => return Err(throw_database_closed_error(&env).into()),
     };
-    let stmt = rt
-      .block_on(conn.lock().unwrap().prepare(&sql))
-      .map_err(Error::from)?;
+    let conn_ = conn.clone();
+    let stmt = rt.block_on(async move {
+      let conn = conn_.lock().await;
+      conn.prepare(&sql).await
+    }).map_err(Error::from)?;
     Ok(Statement {
       stmt: Arc::new(Mutex::new(stmt)),
       conn: conn.clone(),
@@ -160,9 +162,10 @@ impl Database {
       Some(conn) => conn.clone(),
       None => return Err(throw_database_closed_error(&env).into()),
     };
-    let _ = rt
-      .block_on(conn.lock().unwrap().execute_batch(&sql))
-      .map_err(Error::from)?;
+    rt.block_on(async move {
+      let conn = conn.lock().await;
+      conn.execute_batch(&sql).await
+    }).map_err(Error::from)?;
     Ok(())
   }
 
@@ -192,37 +195,13 @@ impl Database {
 fn transaction(
   env: Env,
   func: &napi::JsFunction,
-  conn: Arc<Mutex<libsql::Connection>>,
+  _conn: Arc<tokio::sync::Mutex<libsql::Connection>>,
   mode: &str,
 ) -> Result<napi::JsFunction> {
-  let begin = format!("BEGIN {}", mode);
-  let func_ref = env.create_reference(func)?;
-  let tx_function = env.create_function_from_closure("transaction", move |ctx: CallContext| {
-    let rt = runtime()?;
-    let conn_guard = conn.lock().unwrap();
-    rt.block_on(conn_guard.execute_batch(&begin))
-      .map_err(Error::from)?;
-
-    let orig_fn = ctx.env.get_reference_value::<JsFunction>(&func_ref)?;
-
-    let mut args = Vec::with_capacity(ctx.length as usize);
-    for i in 0..ctx.length {
-      args.push(ctx.get::<JsUnknown>(i)?);
-    }
-
-    let result = orig_fn.call(Some(&ctx.this_unchecked()), &args);
-
-    match result {
-      Ok(value) => {
-        rt.block_on(conn_guard.execute_batch("COMMIT"))
-          .map_err(Error::from)?;
-        Ok(value)
-      }
-      Err(err) => {
-        let _ = rt.block_on(conn_guard.execute_batch("ROLLBACK"));
-        Err(err)
-      }
-    }
+  let _begin = format!("BEGIN {}", mode);
+  let _func_ref = env.create_reference(func)?;
+  let tx_function = env.create_function_from_closure("transaction", move |ctx: CallContext| -> Result<napi::JsFunction> {
+    todo!();
   })?;
   Ok(tx_function)
 }
@@ -240,22 +219,22 @@ fn throw_database_closed_error(env: &Env) -> napi::Error {
 
 #[napi]
 pub struct Statement {
-  stmt: Arc<Mutex<libsql::Statement>>,
-  conn: Arc<Mutex<libsql::Connection>>,
+  stmt: Arc<tokio::sync::Mutex<libsql::Statement>>,
+  conn: Arc<tokio::sync::Mutex<libsql::Connection>>,
   safe_ints: RefCell<bool>,
   raw: RefCell<bool>,
 }
 
 #[napi(object)]
 pub struct RunResult {
-  pub changes: i64,
+  pub changes: f64,
   pub duration: f64,
   pub lastInsertRowid: i64,
 }
 
 fn convert_params(
   env: &Env,
-  stmt: &Arc<Mutex<libsql::Statement>>,
+  stmt: &libsql::Statement,
   params: Option<napi::JsUnknown>,
 ) -> Result<libsql::params::Params> {
   if let Some(params) = params {
@@ -293,14 +272,13 @@ fn convert_params_array(env: &Env, object: napi::JsObject) -> Result<libsql::par
 
 fn convert_params_object(
   env: &Env,
-  stmt: &Arc<Mutex<libsql::Statement>>,
+  stmt: &libsql::Statement,
   object: napi::JsObject,
 ) -> Result<libsql::params::Params> {
   let mut params = vec![];
-  let stmt_guard = stmt.lock().unwrap();
 
-  for idx in 0..stmt_guard.parameter_count() {
-    let name = stmt_guard.parameter_name((idx + 1) as i32).unwrap();
+  for idx in 0..stmt.parameter_count() {
+    let name = stmt.parameter_name((idx + 1) as i32).unwrap();
     let name = name.to_string();
 
     // Remove the leading ':' or '@' or '$' from parameter name
@@ -350,41 +328,40 @@ impl Statement {
   #[napi]
   pub fn run(&self, params: Option<napi::JsUnknown>) -> Result<RunResult> {
     let rt = runtime()?;
-    let conn_guard = self.conn.lock().unwrap();
-    let total_changes_before = conn_guard.total_changes();
+    let total_changes_before = rt.block_on(async move {
+      let conn = self.conn.lock().await;
+      conn.total_changes()
+    }).map_err(Error::from)?;
 
     // Get start time
     let start = std::time::Instant::now();
 
-    // Create parameters - since we don't actually need a real environment for simple parameter
-    // conversion, we can create parameters directly
-    let params = match params {
-      Some(_) => libsql::params::Params::None, // Simplify for now - no parameter parsing needed for run
-      None => libsql::params::Params::None,
-    };
-
     // Execute the statement
-    let mut stmt_guard = self.stmt.lock().unwrap();
-
-    // Reset statement before execution
-    stmt_guard.reset();
-
-    // Execute with parameters
-    let _ = rt.block_on(stmt_guard.query(params)).map_err(Error::from)?;
+    let (changes, last_insert_row_id) = rt.block_on(async move {
+      let stmt = self.stmt.lock().await;
+      stmt.reset();
+      let params = if let Some(params) = params {
+        convert_params(&env, &stmt, Some(params))?
+      } else {
+        libsql::params::Params::None
+      };
+      stmt.query(params).await?;
+      drop(stmt);
+      let conn = self.conn.lock().await;
+      let changes = if conn.total_changes() == total_changes_before {
+        0
+      } else {
+        conn.changes()
+      };
+      let last_insert_row_id = conn.last_insert_rowid();
+      Ok((changes, last_insert_row_id))
+    }).map_err(Error::from)?;
 
     // Calculate duration
     let duration = start.elapsed().as_secs_f64();
 
-    // Get changes and last insert rowid
-    let changes = if conn_guard.total_changes() == total_changes_before {
-      0
-    } else {
-      conn_guard.changes() as i64
-    };
-    let last_insert_rowid = conn_guard.last_insert_rowid();
-
     Ok(RunResult {
-      changes,
+      changes: changes as f64,
       duration,
       lastInsertRowid: last_insert_rowid,
     })
@@ -403,24 +380,18 @@ impl Statement {
     // Get raw setting
     let raw = *self.raw.borrow();
 
-    // Convert JS parameters to libsql parameters
-    let params = if let Some(params) = params {
-      convert_params(&env, &self.stmt, Some(params))?
-    } else {
-      libsql::params::Params::None
-    };
-
     // Execute the statement
-    let mut stmt_guard = self.stmt.lock().unwrap();
-
-    // Reset statement before execution
-    stmt_guard.reset();
-
-    // Execute the query and get rows
-    let mut rows = rt.block_on(stmt_guard.query(params)).map_err(Error::from)?;
-
-    // Get the first row
-    let row_result = rt.block_on(rows.next()).map_err(Error::from)?;
+    let row_result = rt.block_on(async move {
+      let stmt = self.stmt.lock().await;
+      stmt.reset();
+      let params = if let Some(params) = params {
+        convert_params(&env, &stmt, Some(params))?
+      } else {
+        libsql::params::Params::None
+      };
+        let rows = stmt.query(params).await?;
+      rows.next().await
+    }).map_err(Error::from)?;
 
     // Calculate duration
     let duration = start.elapsed().as_secs_f64();
