@@ -332,110 +332,185 @@ fn js_value_to_value(value: napi::JsUnknown) -> Result<libsql::Value> {
 
 #[napi]
 impl Statement {
-  #[napi]
-  pub fn run(&self, params: Option<napi::JsUnknown>) -> Result<RunResult> {
-    let rt = runtime()?;
-    rt.block_on(async move {
-      let conn = self.conn.lock().await;
-      let total_changes_before = conn.total_changes();
+    #[napi]
+    pub fn iterate(&self, env: Env, params: Option<napi::JsUnknown>) -> Result<napi::JsObject> {
+        let rt = runtime()?;
+        // Get safe_ints and raw flags
+        let safe_ints = *self.safe_ints.borrow();
+        let raw = *self.raw.borrow();
+        let stmt = self.stmt.clone();
+        // Lock statement and run query synchronously
+        let rows = rt.block_on(async {
+            let mut stmt = stmt.lock().await;
+            stmt.reset();
+            let params = if let Some(params) = params {
+                convert_params(&stmt, Some(params)).unwrap()
+            } else {
+                libsql::params::Params::None
+            };
+            stmt.query(params).await.map_err(Error::from)
+        })?;
+        // Wrap rows in an iterator struct
+        StatementRows::new(env, rows, safe_ints, raw)
+    }
+
+    #[napi]
+    pub fn run(&self, params: Option<napi::JsUnknown>) -> Result<RunResult> {
+      let rt = runtime()?;
+      rt.block_on(async move {
+        let conn = self.conn.lock().await;
+        let total_changes_before = conn.total_changes();
+        // Get start time
+        let start = std::time::Instant::now();
+  
+        let mut stmt = self.stmt.lock().await;
+        stmt.reset();
+        let params = if let Some(params) = params {
+          convert_params(&stmt, Some(params))?
+        } else {
+          libsql::params::Params::None
+        };
+        stmt.query(params).await.map_err(Error::from)?;
+        let changes = if conn.total_changes() == total_changes_before {
+          0
+        } else {
+          conn.changes()
+        };
+        let last_insert_row_id = conn.last_insert_rowid();
+        // Calculate duration
+        let duration = start.elapsed().as_secs_f64();
+  
+        Ok(RunResult {
+          changes: changes as f64,
+          duration,
+          lastInsertRowid: last_insert_row_id,
+        })
+      })
+    }
+  
+    #[napi]
+    pub fn get(&self, env: Env, params: Option<napi::JsUnknown>) -> Result<napi::JsUnknown> {
+      let rt = runtime()?;
+  
       // Get start time
       let start = std::time::Instant::now();
-
-      let mut stmt = self.stmt.lock().await;
-      stmt.reset();
-      let params = if let Some(params) = params {
-        convert_params(&stmt, Some(params))?
-      } else {
-        libsql::params::Params::None
-      };
-      stmt.query(params).await.map_err(Error::from)?;
-      let changes = if conn.total_changes() == total_changes_before {
-        0
-      } else {
-        conn.changes()
-      };
-      let last_insert_row_id = conn.last_insert_rowid();
-      // Calculate duration
-      let duration = start.elapsed().as_secs_f64();
-
-      Ok(RunResult {
-        changes: changes as f64,
-        duration,
-        lastInsertRowid: last_insert_row_id,
-      })
-    })
-  }
-
-  #[napi]
-  pub fn get(&self, env: Env, params: Option<napi::JsUnknown>) -> Result<napi::JsUnknown> {
-    let rt = runtime()?;
-
-    // Get start time
-    let start = std::time::Instant::now();
-
-    // Get safe_ints setting
-    let safe_ints = *self.safe_ints.borrow();
-
-    // Get raw setting
-    let raw = *self.raw.borrow();
-
-    // Execute the statement
-    rt.block_on(async move {
-      let mut stmt = self.stmt.lock().await;
-      stmt.reset();
-      let params = if let Some(params) = params {
-        convert_params(&stmt, Some(params))?
-      } else {
-        libsql::params::Params::None
-      };
-      let mut rows = stmt.query(params).await.map_err(Error::from)?;
-      let row = rows.next().await.map_err(Error::from)?;
-      // Calculate duration
-      let duration = start.elapsed().as_secs_f64();
-      let result = match row {
-        Some(row) => {
-          if raw {
-            // Convert row to array
-            let js_array = convert_row_raw(&env, safe_ints, &rows, &row)?;
-            Ok(js_array)
-          } else {
-            // Create an object
-            let mut js_object = env.create_object()?;
-
-            // Convert row to object
-            convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
-
-            // Add metadata
-            let mut metadata = env.create_object()?;
-            let js_duration = env.create_double(duration)?;
-            metadata.set_named_property("duration", js_duration)?;
-            js_object.set_named_property("_metadata", metadata)?;
-
-            Ok(js_object.into_unknown())
+  
+      // Get safe_ints setting
+      let safe_ints = *self.safe_ints.borrow();
+  
+      // Get raw setting
+      let raw = *self.raw.borrow();
+  
+      // Execute the statement
+      rt.block_on(async move {
+        let mut stmt = self.stmt.lock().await;
+        stmt.reset();
+        let params = if let Some(params) = params {
+          convert_params(&stmt, Some(params))?
+        } else {
+          libsql::params::Params::None
+        };
+        let mut rows = stmt.query(params).await.map_err(Error::from)?;
+        let row = rows.next().await.map_err(Error::from)?;
+        // Calculate duration
+        let duration = start.elapsed().as_secs_f64();
+        let result = match row {
+          Some(row) => {
+            if raw {
+              // Convert row to array
+              let js_array = convert_row_raw(&env, safe_ints, &rows, &row)?;
+              Ok(js_array)
+            } else {
+              // Create an object
+              let mut js_object = env.create_object()?;
+  
+              // Convert row to object
+              convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
+  
+              // Add metadata
+              let mut metadata = env.create_object()?;
+              let js_duration = env.create_double(duration)?;
+              metadata.set_named_property("duration", js_duration)?;
+              js_object.set_named_property("_metadata", metadata)?;
+  
+              Ok(js_object.into_unknown())
+            }
           }
-        }
-        None => {
-          // Return undefined for no row
-          let undefined = env.get_undefined()?;
-          Ok(undefined.into_unknown())
-        }
-      };
-      stmt.reset();
-      result
-    })
+          None => {
+            // Return undefined for no row
+            let undefined = env.get_undefined()?;
+            Ok(undefined.into_unknown())
+          }
+        };
+        stmt.reset();
+        result
+      })
+    }
+  
+    #[napi]
+    pub fn raw(&self) -> Result<&Self> {
+      self.raw.replace(true);
+      Ok(self)
+    }
+  
+    #[napi]
+    pub fn safeIntegers(&self, toggle: Option<bool>) -> Result<&Self> {
+      self.safe_ints.replace(toggle.unwrap_or(true));
+      Ok(self)
+    }
   }
 
-  #[napi]
-  pub fn raw(&self) -> Result<&Self> {
-    self.raw.replace(true);
-    Ok(self)
-  }
 
-  #[napi]
-  pub fn safeIntegers(&self, toggle: Option<bool>) -> Result<&Self> {
-    self.safe_ints.replace(toggle.unwrap_or(true));
-    Ok(self)
-  }
+#[napi]
+pub struct StatementRows {
+    rows: std::cell::RefCell<libsql::Rows>,
+    safe_ints: bool,
+    raw: bool,
+    env: Env,
+}
+
+#[napi]
+impl StatementRows {
+    pub fn new(env: Env, rows: libsql::Rows, safe_ints: bool, raw: bool) -> Result<napi::JsObject> {
+        let mut js_obj = env.create_object()?;
+        let wrapper = StatementRows {
+            rows: std::cell::RefCell::new(rows),
+            safe_ints,
+            raw,
+            env: env.clone(),
+        };
+        let mut_ref = env.wrap(&mut js_obj, wrapper)?;
+        // Attach next() method
+        let next_fn = env.create_function_from_closure("next", move |ctx: CallContext| {
+            let this = ctx.this_unchecked::<napi::JsObject>();
+            let wrapper: &mut StatementRows = ctx.env.unwrap(&this)?;
+            let rt = runtime()?;
+            rt.block_on(async move {
+              let mut rows = wrapper.rows.borrow_mut();
+              let next_row = rows.next().await.map_err(Error::from)?;
+              let mut result_obj = ctx.env.create_object()?;
+              match next_row {
+                  Some(row) => {
+                      let value = if wrapper.raw {
+                          convert_row_raw(&ctx.env, wrapper.safe_ints, &rows, &row)?
+                      } else {
+                          let mut js_object = ctx.env.create_object()?;
+                          convert_row(&ctx.env, wrapper.safe_ints, &mut js_object, &rows, &row)?;
+                          js_object.into_unknown()
+                      };
+                      result_obj.set_named_property("value", value)?;
+                      result_obj.set_named_property("done", ctx.env.get_boolean(false)?)?;
+                  }
+                  None => {
+                      result_obj.set_named_property("done", ctx.env.get_boolean(true)?)?;
+                  }
+              }
+              Ok(result_obj)  
+            })
+        })?;
+        js_obj.set_named_property("next", next_fn)?;
+        Ok(js_obj)
+    }
 }
 
 fn runtime() -> Result<&'static Runtime> {
