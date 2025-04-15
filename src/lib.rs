@@ -83,11 +83,17 @@ impl Database {
   #[napi]
   pub fn prepare(&self, sql: String) -> Result<Statement> {
     let rt = runtime()?;
-    let conn = self.conn.as_ref().expect("Database is closed").lock().unwrap();
+    let conn = match self.conn.as_ref() {
+    Some(conn) => conn.lock().unwrap(),
+    None => return Err(napi::Error::from_reason("Database is closed")),
+};
     let stmt = rt.block_on(conn.prepare(&sql)).map_err(Error::from)?;
     Ok(Statement {
       stmt: Arc::new(Mutex::new(stmt)),
-      conn: self.conn.clone().expect("Database is closed"),
+      conn: match self.conn.clone() {
+    Some(conn) => conn,
+    None => return Err(napi::Error::from_reason("Database is closed")),
+},
       safe_ints: RefCell::new(false),
       raw: RefCell::new(false),
     })
