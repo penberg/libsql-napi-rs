@@ -35,7 +35,7 @@ export declare class Statement {
   run(params?: unknown | undefined | null): RunResult
   all(params?: unknown | undefined | null): unknown[]
   get(params?: unknown | undefined | null): unknown
-  raw(): this
+  raw(raw?: boolean | undefined | null): this
   safeIntegers(toggle?: boolean | undefined | null): this
 }
 export declare class StatementRows { }

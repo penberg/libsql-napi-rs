@@ -482,8 +482,8 @@ impl Statement {
   }
 
   #[napi]
-  pub fn raw(&self) -> Result<&Self> {
-    self.raw.replace(true);
+  pub fn raw(&self, raw: Option<bool>) -> Result<&Self> {
+    self.raw.replace(raw.unwrap_or(true));
     Ok(self)
   }
 
@@ -584,7 +584,7 @@ fn convert_row(
         result.set_named_property(column_name, js_null)?;
       }
       libsql::Value::Integer(v) => {
-        if safe_ints && (v > i32::MAX as i64 || v < i32::MIN as i64) {
+        if safe_ints {
           let js_int = env.create_int64(v)?;
           result.set_named_property(column_name, js_int)?;
         } else {
@@ -629,8 +629,8 @@ fn convert_row_raw(
     let js_value: JsUnknown = match value {
       libsql::Value::Null => env.get_null()?.into_unknown(),
       libsql::Value::Integer(v) => {
-        if safe_ints && (v > i32::MAX as i64 || v < i32::MIN as i64) {
-          env.create_int64(v)?.into_unknown()
+        if safe_ints {
+          env.create_bigint_from_i64(v)?.into_unknown()
         } else {
           env.create_double(v as f64)?.into_unknown()
         }
