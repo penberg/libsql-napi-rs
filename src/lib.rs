@@ -4,14 +4,11 @@
 #[macro_use]
 extern crate napi_derive;
 
-use std::{
-  cell::RefCell,
-  sync::{Arc},
-};
+use std::{cell::RefCell, sync::Arc};
 
 use napi::{CallContext, Env, JsFunction, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
-use tokio::{sync::Mutex, runtime::Runtime};
+use tokio::{runtime::Runtime, sync::Mutex};
 
 struct Error(libsql::Error);
 
@@ -88,10 +85,12 @@ impl Database {
       None => return Err(throw_database_closed_error(&env).into()),
     };
     let conn_ = conn.clone();
-    let stmt = rt.block_on(async move {
-      let conn = conn_.lock().await;
-      conn.prepare(&sql).await
-    }).map_err(Error::from)?;
+    let stmt = rt
+      .block_on(async move {
+        let conn = conn_.lock().await;
+        conn.prepare(&sql).await
+      })
+      .map_err(Error::from)?;
     Ok(Statement {
       stmt: Arc::new(Mutex::new(stmt)),
       conn: conn.clone(),
@@ -165,7 +164,8 @@ impl Database {
     rt.block_on(async move {
       let conn = conn.lock().await;
       conn.execute_batch(&sql).await
-    }).map_err(Error::from)?;
+    })
+    .map_err(Error::from)?;
     Ok(())
   }
 
@@ -200,9 +200,12 @@ fn transaction(
 ) -> Result<napi::JsFunction> {
   let _begin = format!("BEGIN {}", mode);
   let _func_ref = env.create_reference(func)?;
-  let tx_function = env.create_function_from_closure("transaction", move |ctx: CallContext| -> Result<napi::JsFunction> {
-    todo!();
-  })?;
+  let tx_function = env.create_function_from_closure(
+    "transaction",
+    move |ctx: CallContext| -> Result<napi::JsFunction> {
+      todo!();
+    },
+  )?;
   Ok(tx_function)
 }
 
@@ -233,7 +236,6 @@ pub struct RunResult {
 }
 
 fn convert_params(
-  env: &Env,
   stmt: &libsql::Statement,
   params: Option<napi::JsUnknown>,
 ) -> Result<libsql::params::Params> {
@@ -241,9 +243,9 @@ fn convert_params(
     // Check if it's an array by trying to cast it
     if let Ok(object) = params.coerce_to_object() {
       if object.is_array()? {
-        convert_params_array(env, object)
+        convert_params_array(object)
       } else {
-        convert_params_object(env, stmt, object)
+        convert_params_object(stmt, object)
       }
     } else {
       // If we can't coerce to object, return empty params
@@ -254,7 +256,7 @@ fn convert_params(
   }
 }
 
-fn convert_params_array(env: &Env, object: napi::JsObject) -> Result<libsql::params::Params> {
+fn convert_params_array(object: napi::JsObject) -> Result<libsql::params::Params> {
   let mut params = vec![];
 
   // Get array length using the proper method
@@ -263,7 +265,7 @@ fn convert_params_array(env: &Env, object: napi::JsObject) -> Result<libsql::par
   // Get array elements
   for i in 0..length {
     let element = object.get_element::<napi::JsUnknown>(i)?;
-    let value = js_value_to_value(env, element)?;
+    let value = js_value_to_value(element)?;
     params.push(value);
   }
 
@@ -271,7 +273,6 @@ fn convert_params_array(env: &Env, object: napi::JsObject) -> Result<libsql::par
 }
 
 fn convert_params_object(
-  env: &Env,
   stmt: &libsql::Statement,
   object: napi::JsObject,
 ) -> Result<libsql::params::Params> {
@@ -285,7 +286,7 @@ fn convert_params_object(
     let key = &name[1..];
 
     if let Ok(value) = object.get_named_property::<napi::JsUnknown>(key) {
-      let value = js_value_to_value(env, value)?;
+      let value = js_value_to_value(value)?;
       params.push((name, value));
     }
   }
@@ -293,7 +294,7 @@ fn convert_params_object(
   Ok(libsql::params::Params::Named(params))
 }
 
-fn js_value_to_value(_env: &Env, value: napi::JsUnknown) -> Result<libsql::Value> {
+fn js_value_to_value(value: napi::JsUnknown) -> Result<libsql::Value> {
   let value_type = value.get_type()?;
 
   match value_type {
@@ -328,42 +329,34 @@ impl Statement {
   #[napi]
   pub fn run(&self, params: Option<napi::JsUnknown>) -> Result<RunResult> {
     let rt = runtime()?;
-    let total_changes_before = rt.block_on(async move {
+    rt.block_on(async move {
       let conn = self.conn.lock().await;
-      conn.total_changes()
-    }).map_err(Error::from)?;
+      let total_changes_before = conn.total_changes();
+      // Get start time
+      let start = std::time::Instant::now();
 
-    // Get start time
-    let start = std::time::Instant::now();
-
-    // Execute the statement
-    let (changes, last_insert_row_id) = rt.block_on(async move {
-      let stmt = self.stmt.lock().await;
+      let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&env, &stmt, Some(params))?
+        convert_params(&stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
-      stmt.query(params).await?;
-      drop(stmt);
-      let conn = self.conn.lock().await;
+      stmt.query(params).await.map_err(Error::from)?;
       let changes = if conn.total_changes() == total_changes_before {
         0
       } else {
         conn.changes()
       };
       let last_insert_row_id = conn.last_insert_rowid();
-      Ok((changes, last_insert_row_id))
-    }).map_err(Error::from)?;
+      // Calculate duration
+      let duration = start.elapsed().as_secs_f64();
 
-    // Calculate duration
-    let duration = start.elapsed().as_secs_f64();
-
-    Ok(RunResult {
-      changes: changes as f64,
-      duration,
-      lastInsertRowid: last_insert_rowid,
+      Ok(RunResult {
+        changes: changes as f64,
+        duration,
+        lastInsertRowid: last_insert_row_id,
+      })
     })
   }
 
@@ -381,50 +374,47 @@ impl Statement {
     let raw = *self.raw.borrow();
 
     // Execute the statement
-    let row_result = rt.block_on(async move {
-      let stmt = self.stmt.lock().await;
+    rt.block_on(async move {
+      let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&env, &stmt, Some(params))?
+        convert_params(&stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
-        let rows = stmt.query(params).await?;
-      rows.next().await
-    }).map_err(Error::from)?;
+      let mut rows = stmt.query(params).await.map_err(Error::from)?;
+      let row = rows.next().await.map_err(Error::from)?;
+      // Calculate duration
+      let duration = start.elapsed().as_secs_f64();
+      match row {
+        Some(row) => {
+          if raw {
+            // Convert row to array
+            let js_array = convert_row_raw(&env, safe_ints, &rows, &row)?;
+            Ok(js_array)
+          } else {
+            // Create an object
+            let mut js_object = env.create_object()?;
 
-    // Calculate duration
-    let duration = start.elapsed().as_secs_f64();
+            // Convert row to object
+            convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
 
-    // Convert row to JavaScript object
-    match row_result {
-      Some(row) => {
-        if raw {
-          // Convert row to array
-          let js_array = convert_row_raw(&env, safe_ints, &rows, &row)?;
-          Ok(js_array)
-        } else {
-          // Create an object
-          let mut js_object = env.create_object()?;
+            // Add metadata
+            let mut metadata = env.create_object()?;
+            let js_duration = env.create_double(duration)?;
+            metadata.set_named_property("duration", js_duration)?;
+            js_object.set_named_property("_metadata", metadata)?;
 
-          // Convert row to object
-          convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
-
-          // Add metadata
-          let mut metadata = env.create_object()?;
-          let js_duration = env.create_double(duration)?;
-          metadata.set_named_property("duration", js_duration)?;
-          js_object.set_named_property("_metadata", metadata)?;
-
-          Ok(js_object.into_unknown())
+            Ok(js_object.into_unknown())
+          }
+        }
+        None => {
+          // Return undefined for no row
+          let undefined = env.get_undefined()?;
+          Ok(undefined.into_unknown())
         }
       }
-      None => {
-        // Return undefined for no row
-        let undefined = env.get_undefined()?;
-        Ok(undefined.into_unknown())
-      }
-    }
+    })
   }
 
   #[napi]
