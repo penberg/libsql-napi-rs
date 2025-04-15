@@ -515,7 +515,6 @@ impl StatementRows {
       .get_named_property::<napi::JsFunction>("Symbol")?
       .coerce_to_object()?; // Convert JsFunction to JsObject
     let symbol_iterator = symbol_ctor.get_named_property::<napi::JsSymbol>("iterator")?;
-
     // Attach [Symbol.iterator]
     js_obj.set_property(symbol_iterator, iterator_fn)?;
     Ok(js_obj)
