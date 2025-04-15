@@ -240,21 +240,27 @@ fn convert_params(
   params: Option<napi::JsUnknown>,
 ) -> Result<libsql::params::Params> {
   if let Some(params) = params {
-    // Check if it's an array by trying to cast it
-    if let Ok(object) = params.coerce_to_object() {
-      if object.is_array()? {
-        convert_params_array(object)
-      } else {
-        convert_params_object(stmt, object)
+    match params.get_type()? {
+      ValueType::Object => {
+        let object = params.coerce_to_object()?;
+        if object.is_array()? {
+          convert_params_array(object)
+        } else {
+          convert_params_object(stmt, object)
+        }
       }
-    } else {
-      // If we can't coerce to object, return empty params
-      Ok(libsql::params::Params::None)
+      _ => convert_params_single(params),
     }
   } else {
     Ok(libsql::params::Params::None)
   }
 }
+
+
+fn convert_params_single(param: napi::JsUnknown) -> Result<libsql::params::Params> {
+  Ok(libsql::params::Params::Positional(vec![js_value_to_value(param)?]))
+}
+
 
 fn convert_params_array(object: napi::JsObject) -> Result<libsql::params::Params> {
   let mut params = vec![];
