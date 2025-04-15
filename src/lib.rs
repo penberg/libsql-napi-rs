@@ -470,7 +470,12 @@ pub struct StatementRows {
 
 #[napi]
 impl StatementRows {
-  pub fn new(env: Env, rows: Arc<tokio::sync::Mutex<libsql::Rows>>, safe_ints: bool, raw: bool) -> Result<napi::JsObject> {
+  pub fn new(
+    env: Env,
+    rows: Arc<tokio::sync::Mutex<libsql::Rows>>,
+    safe_ints: bool,
+    raw: bool,
+  ) -> Result<napi::JsObject> {
     let mut js_obj = env.create_object()?;
     let next_fn = env.create_function_from_closure("next", move |ctx: CallContext| {
       let rt = runtime()?;
@@ -499,13 +504,19 @@ impl StatementRows {
       })
     })?;
     js_obj.set_named_property("next", next_fn)?;
-    // Attach [Symbol.iterator] so this object is iterable in JS
-    let global = env.get_global()?;
-    let symbol_ctor = global.get_named_property::<napi::JsObject>("Symbol")?;
-    let symbol_iterator = symbol_ctor.get_named_property::<napi::JsSymbol>("iterator")?;
-    let iterator_fn = env.create_function_from_closure("[Symbol.iterator]", move |ctx: CallContext| {
+    // Create iterator function
+    let iterator_fn = env.create_function_from_closure("iterator", move |ctx: CallContext| {
       Ok(ctx.this_unchecked::<napi::JsObject>())
     })?;
+
+    // Get Symbol.iterator
+    let global = env.get_global()?;
+    let symbol_ctor = global
+      .get_named_property::<napi::JsFunction>("Symbol")?
+      .coerce_to_object()?; // Convert JsFunction to JsObject
+    let symbol_iterator = symbol_ctor.get_named_property::<napi::JsSymbol>("iterator")?;
+
+    // Attach [Symbol.iterator]
     js_obj.set_property(symbol_iterator, iterator_fn)?;
     Ok(js_obj)
   }
