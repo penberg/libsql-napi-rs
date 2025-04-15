@@ -236,8 +236,7 @@ pub struct RunResult {
   pub lastInsertRowid: i64,
 }
 
-fn convert_params(
-  env: &napi::Env,
+fn map_params(
   stmt: &libsql::Statement,
   params: Option<napi::JsUnknown>,
 ) -> Result<libsql::params::Params> {
@@ -246,28 +245,23 @@ fn convert_params(
       ValueType::Object => {
         let object = params.coerce_to_object()?;
         if object.is_array()? {
-          convert_params_array(env, object)
+          map_params_array(object)
         } else {
-          convert_params_object(env, stmt, object)
+          map_params_object(stmt, object)
         }
       }
-      _ => convert_params_single(env, params),
+      _ => map_params_single(params),
     }
   } else {
     Ok(libsql::params::Params::None)
   }
 }
 
-fn convert_params_single(
-  env: &napi::Env,
-  param: napi::JsUnknown,
-) -> Result<libsql::params::Params> {
-  Ok(libsql::params::Params::Positional(vec![js_value_to_value(
-    env, param,
-  )?]))
+fn map_params_single(param: napi::JsUnknown) -> Result<libsql::params::Params> {
+  Ok(libsql::params::Params::Positional(vec![map_value(param)?]))
 }
 
-fn convert_params_array(env: &napi::Env, object: napi::JsObject) -> Result<libsql::params::Params> {
+fn map_params_array(object: napi::JsObject) -> Result<libsql::params::Params> {
   let mut params = vec![];
 
   // Get array length using the proper method
@@ -276,15 +270,14 @@ fn convert_params_array(env: &napi::Env, object: napi::JsObject) -> Result<libsq
   // Get array elements
   for i in 0..length {
     let element = object.get_element::<napi::JsUnknown>(i)?;
-    let value = js_value_to_value(env, element)?;
+    let value = map_value(element)?;
     params.push(value);
   }
 
   Ok(libsql::params::Params::Positional(params))
 }
 
-fn convert_params_object(
-  env: &napi::Env,
+fn map_params_object(
   stmt: &libsql::Statement,
   object: napi::JsObject,
 ) -> Result<libsql::params::Params> {
@@ -298,7 +291,7 @@ fn convert_params_object(
     let key = &name[1..];
 
     if let Ok(value) = object.get_named_property::<napi::JsUnknown>(key) {
-      let value = js_value_to_value(env, value)?;
+      let value = map_value(value)?;
       params.push((name, value));
     }
   }
@@ -306,7 +299,8 @@ fn convert_params_object(
   Ok(libsql::params::Params::Named(params))
 }
 
-fn js_value_to_value(env: &Env, value: JsUnknown) -> Result<libsql::Value> {
+/// Maps a JavaScript value to libSQL value types.
+fn map_value(value: JsUnknown) -> Result<libsql::Value> {
   let value_type = value.get_type()?;
 
   match value_type {
@@ -381,7 +375,7 @@ impl Statement {
       let mut stmt = stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&env, &stmt, Some(params)).unwrap()
+        map_params(&stmt, Some(params)).unwrap()
       } else {
         libsql::params::Params::None
       };
@@ -403,7 +397,7 @@ impl Statement {
       let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&env, &stmt, Some(params))?
+        map_params(&stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
@@ -435,7 +429,7 @@ impl Statement {
       let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&env, &stmt, Some(params))?
+        map_params(&stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
@@ -492,7 +486,7 @@ impl Statement {
   pub fn raw(&self, raw: Option<bool>) -> Result<&Self> {
     let rt = runtime()?;
     let returns_data = rt.block_on(async move {
-      let mut stmt = self.stmt.lock().await;
+      let stmt = self.stmt.lock().await;
       !stmt.columns().is_empty()
     });
     if !returns_data {
@@ -522,7 +516,7 @@ impl Statement {
       let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&env, &stmt, Some(params))?
+        map_params(&stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
