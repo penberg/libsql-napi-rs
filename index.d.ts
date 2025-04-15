@@ -11,6 +11,12 @@ export interface RunResult {
   duration: number
   lastInsertRowid: number
 }
+export declare class SqliteError {
+  message: string
+  code: string
+  rawCode?: string
+  constructor(message: string, code: string, rawCode?: string | undefined | null)
+}
 export declare class Database {
   get memory(): boolean
   constructor(path: string, opts?: Options | undefined | null)

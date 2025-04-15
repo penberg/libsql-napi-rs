@@ -4,10 +4,29 @@
 #[macro_use]
 extern crate napi_derive;
 
+
 use napi::{bindgen_prelude::Array, CallContext, Env, JsFunction, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
 use std::{cell::RefCell, sync::Arc};
 use tokio::{runtime::Runtime, sync::Mutex};
+
+#[napi]
+pub struct SqliteError {
+    #[napi]
+    pub message: String,
+    #[napi]
+    pub code: String,
+    #[napi(js_name = rawCode)]
+    pub raw_code: Option<String>,
+}
+
+#[napi]
+impl SqliteError {
+    #[napi(constructor)]
+    pub fn new(message: String, code: String, raw_code: Option<String>) -> Self {
+        SqliteError { message, code, raw_code }
+    }
+}
 
 struct Error(libsql::Error);
 
