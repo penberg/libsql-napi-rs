@@ -95,7 +95,7 @@ impl Database {
     Ok(Statement {
       stmt: Arc::new(Mutex::new(stmt)),
       conn: conn.clone(),
-      safe_ints: RefCell::new(false),
+      safe_ints: RefCell::new(*self.default_safe_integers.borrow()),
       raw: RefCell::new(false),
     })
   }
@@ -182,8 +182,8 @@ impl Database {
   }
 
   #[napi]
-  pub fn defaultSafeIntegers(&self, toggle: bool) -> Result<()> {
-    self.default_safe_integers.replace(toggle);
+  pub fn defaultSafeIntegers(&self, toggle: Option<bool>) -> Result<()> {
+    self.default_safe_integers.replace(toggle.unwrap_or(true));
     Ok(())
   }
 

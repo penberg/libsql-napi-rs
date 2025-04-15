@@ -27,7 +27,7 @@ export declare class Database {
   exec(sql: string): void
   interrupt(): void
   close(): void
-  defaultSafeIntegers(toggle: boolean): void
+  defaultSafeIntegers(toggle?: boolean | undefined | null): void
   unsafeMode(): void
 }
 export declare class Statement {
