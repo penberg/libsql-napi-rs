@@ -499,6 +499,14 @@ impl StatementRows {
       })
     })?;
     js_obj.set_named_property("next", next_fn)?;
+    // Attach [Symbol.iterator] so this object is iterable in JS
+    let global = env.get_global()?;
+    let symbol_ctor = global.get_named_property::<napi::JsObject>("Symbol")?;
+    let symbol_iterator = symbol_ctor.get_named_property::<napi::JsSymbol>("iterator")?;
+    let iterator_fn = env.create_function_from_closure("[Symbol.iterator]", move |ctx: CallContext| {
+      Ok(ctx.this_unchecked::<napi::JsObject>())
+    })?;
+    js_obj.set_property(symbol_iterator, iterator_fn)?;
     Ok(js_obj)
   }
 }
