@@ -4,11 +4,9 @@
 #[macro_use]
 extern crate napi_derive;
 
-use std::{cell::RefCell, sync::Arc};
-
-use napi::{CallContext, Env, JsFunction, JsUnknown, Result, ValueType};
-use napi::bindgen_prelude::Array;
+use napi::{bindgen_prelude::Array, CallContext, Env, JsFunction, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
+use std::{cell::RefCell, sync::Arc};
 use tokio::{runtime::Runtime, sync::Mutex};
 
 struct Error(libsql::Error);
@@ -239,6 +237,7 @@ pub struct RunResult {
 }
 
 fn convert_params(
+  env: &napi::Env,
   stmt: &libsql::Statement,
   params: Option<napi::JsUnknown>,
 ) -> Result<libsql::params::Params> {
@@ -247,25 +246,28 @@ fn convert_params(
       ValueType::Object => {
         let object = params.coerce_to_object()?;
         if object.is_array()? {
-          convert_params_array(object)
+          convert_params_array(env, object)
         } else {
-          convert_params_object(stmt, object)
+          convert_params_object(env, stmt, object)
         }
       }
-      _ => convert_params_single(params),
+      _ => convert_params_single(env, params),
     }
   } else {
     Ok(libsql::params::Params::None)
   }
 }
 
-fn convert_params_single(param: napi::JsUnknown) -> Result<libsql::params::Params> {
+fn convert_params_single(
+  env: &napi::Env,
+  param: napi::JsUnknown,
+) -> Result<libsql::params::Params> {
   Ok(libsql::params::Params::Positional(vec![js_value_to_value(
-    param,
+    env, param,
   )?]))
 }
 
-fn convert_params_array(object: napi::JsObject) -> Result<libsql::params::Params> {
+fn convert_params_array(env: &napi::Env, object: napi::JsObject) -> Result<libsql::params::Params> {
   let mut params = vec![];
 
   // Get array length using the proper method
@@ -274,7 +276,7 @@ fn convert_params_array(object: napi::JsObject) -> Result<libsql::params::Params
   // Get array elements
   for i in 0..length {
     let element = object.get_element::<napi::JsUnknown>(i)?;
-    let value = js_value_to_value(element)?;
+    let value = js_value_to_value(env, element)?;
     params.push(value);
   }
 
@@ -282,6 +284,7 @@ fn convert_params_array(object: napi::JsObject) -> Result<libsql::params::Params
 }
 
 fn convert_params_object(
+  env: &napi::Env,
   stmt: &libsql::Statement,
   object: napi::JsObject,
 ) -> Result<libsql::params::Params> {
@@ -295,7 +298,7 @@ fn convert_params_object(
     let key = &name[1..];
 
     if let Ok(value) = object.get_named_property::<napi::JsUnknown>(key) {
-      let value = js_value_to_value(value)?;
+      let value = js_value_to_value(env, value)?;
       params.push((name, value));
     }
   }
@@ -303,31 +306,64 @@ fn convert_params_object(
   Ok(libsql::params::Params::Named(params))
 }
 
-fn js_value_to_value(value: napi::JsUnknown) -> Result<libsql::Value> {
+fn js_value_to_value(env: &Env, value: JsUnknown) -> Result<libsql::Value> {
   let value_type = value.get_type()?;
 
   match value_type {
     ValueType::Null | ValueType::Undefined => Ok(libsql::Value::Null),
 
     ValueType::Boolean => {
-      let value = value.coerce_to_bool()?.get_value()?;
-      Ok(libsql::Value::Integer(if value { 1 } else { 0 }))
+      let js_bool = value.coerce_to_bool()?;
+      let b = js_bool.get_value()?;
+      Ok(libsql::Value::Integer(if b { 1 } else { 0 }))
     }
 
     ValueType::Number => {
-      let value = value.coerce_to_number()?.get_double()?;
-      Ok(libsql::Value::Real(value))
+      let js_num = value.coerce_to_number()?;
+      let n = js_num.get_double()?;
+      Ok(libsql::Value::Real(n))
     }
 
     ValueType::String => {
-      let js_string = value.coerce_to_string()?;
-      let utf8 = js_string.into_utf8()?;
-      Ok(libsql::Value::Text(utf8.as_str().unwrap().to_string()))
+      let js_str = value.coerce_to_string()?;
+      let utf8 = js_str.into_utf8()?;
+      // into_utf8 returns a Utf8 object that derefs to str
+      Ok(libsql::Value::Text(utf8.as_str()?.to_owned()))
     }
 
-    // Handle other types like Buffer for blobs
-    _ => Err(napi::Error::from_reason("SQLite3 can only bind numbers, strings, bigints, buffers, and null")),
+    ValueType::Object => {
+      let obj = value.coerce_to_object()?;
 
+      // Check if it's a buffer
+      if obj.is_buffer()? {
+        let js_buf = napi::JsBuffer::try_from(obj.into_unknown())?;
+        let data = js_buf.into_value()?;
+        return Ok(libsql::Value::Blob(data.to_vec()));
+      }
+
+      if obj.is_typedarray()? {
+        let js_typed = napi::JsTypedArray::try_from(obj.into_unknown())?;
+        let typed_array_value = js_typed.into_value()?;
+
+        let buffer_data = typed_array_value.arraybuffer.into_value()?;
+        let start = typed_array_value.byte_offset;
+        let end = start + typed_array_value.length;
+
+        if end > buffer_data.len() {
+          return Err(napi::Error::from_reason("TypedArray length out of bounds"));
+        }
+
+        let slice = &buffer_data[start..end];
+        return Ok(libsql::Value::Blob(slice.to_vec()));
+      }
+      Err(napi::Error::from_reason(
+        "SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+      ))
+    }
+
+    _ => Err(napi::Error::from_reason(
+      "SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+    )),
   }
 }
 
@@ -345,7 +381,7 @@ impl Statement {
       let mut stmt = stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&stmt, Some(params)).unwrap()
+        convert_params(&env, &stmt, Some(params)).unwrap()
       } else {
         libsql::params::Params::None
       };
@@ -356,7 +392,7 @@ impl Statement {
   }
 
   #[napi]
-  pub fn run(&self, params: Option<napi::JsUnknown>) -> Result<RunResult> {
+  pub fn run(&self, env: Env, params: Option<napi::JsUnknown>) -> Result<RunResult> {
     let rt = runtime()?;
     rt.block_on(async move {
       let conn = self.conn.lock().await;
@@ -367,7 +403,7 @@ impl Statement {
       let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&stmt, Some(params))?
+        convert_params(&env, &stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
@@ -399,11 +435,14 @@ impl Statement {
       let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&stmt, Some(params))?
+        convert_params(&env, &stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
-      stmt.query(params).await.map_err(|e| napi::Error::from_reason(e.to_string()))
+      stmt
+        .query(params)
+        .await
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
     })?;
 
     let mut js_array = env.create_array(0)?;
@@ -457,7 +496,9 @@ impl Statement {
       !stmt.columns().is_empty()
     });
     if !returns_data {
-      return Err(napi::Error::from_reason("The raw() method is only for statements that return data"));
+      return Err(napi::Error::from_reason(
+        "The raw() method is only for statements that return data",
+      ));
     }
     self.raw.replace(raw.unwrap_or(true));
     Ok(self)
@@ -481,7 +522,7 @@ impl Statement {
       let mut stmt = self.stmt.lock().await;
       stmt.reset();
       let params = if let Some(params) = params {
-        convert_params(&stmt, Some(params))?
+        convert_params(&env, &stmt, Some(params))?
       } else {
         libsql::params::Params::None
       };
