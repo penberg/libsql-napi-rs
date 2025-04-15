@@ -33,6 +33,7 @@ export declare class Database {
 export declare class Statement {
   iterate(params?: unknown | undefined | null): object
   run(params?: unknown | undefined | null): RunResult
+  all(params?: unknown | undefined | null): unknown[]
   get(params?: unknown | undefined | null): unknown
   raw(): this
   safeIntegers(toggle?: boolean | undefined | null): this

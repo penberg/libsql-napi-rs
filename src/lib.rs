@@ -7,6 +7,7 @@ extern crate napi_derive;
 use std::{cell::RefCell, sync::Arc};
 
 use napi::{CallContext, Env, JsFunction, JsUnknown, Result, ValueType};
+use napi::bindgen_prelude::Array;
 use once_cell::sync::OnceCell;
 use tokio::{runtime::Runtime, sync::Mutex};
 
@@ -386,6 +387,39 @@ impl Statement {
         lastInsertRowid: last_insert_row_id,
       })
     })
+  }
+
+  #[napi]
+  pub fn all(&self, env: Env, params: Option<napi::JsUnknown>) -> Result<Array> {
+    let rt = runtime()?;
+    let safe_ints = *self.safe_ints.borrow();
+    let raw = *self.raw.borrow();
+
+    let mut rows = rt.block_on(async {
+      let mut stmt = self.stmt.lock().await;
+      stmt.reset();
+      let params = if let Some(params) = params {
+        convert_params(&stmt, Some(params))?
+      } else {
+        libsql::params::Params::None
+      };
+      stmt.query(params).await.map_err(|e| napi::Error::from_reason(e.to_string()))
+    })?;
+
+    let mut js_array = env.create_array(0)?;
+    let mut idx = 0u32;
+    while let Some(row) = rt.block_on(rows.next()).map_err(Error::from)? {
+      let js_value = if raw {
+        convert_row_raw(&env, safe_ints, &rows, &row)?
+      } else {
+        let mut js_object = env.create_object()?;
+        convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
+        js_object.into_unknown()
+      };
+      js_array.set(idx, js_value)?;
+      idx += 1;
+    }
+    Ok(js_array)
   }
 
   #[napi]
