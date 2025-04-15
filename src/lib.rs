@@ -100,7 +100,6 @@ impl Database {
 
   #[napi]
   pub fn transaction(&self, env: Env, func: napi::JsFunction) -> Result<napi::JsFunction> {
-    let rt = runtime()?;
     let conn = match &self.conn {
       Some(conn) => conn.clone(),
       None => return Err(throw_database_closed_error(&env).into()),
@@ -233,9 +232,9 @@ fn is_remote_path(path: &str) -> bool {
 }
 
 fn throw_database_closed_error(env: &Env) -> napi::Error {
-  let msg = "Database is closed";
+  let msg = "The database connection is not open";
   let err = napi::Error::new(napi::Status::InvalidArg, msg.to_string());
-  env.throw_type_error(&msg, None)?;
+  env.throw_type_error(&msg, None).unwrap();
   err
 }
 
