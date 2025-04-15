@@ -33,6 +33,7 @@ pub struct Database {
   db: libsql::Database,
   conn: Arc<Mutex<libsql::Connection>>,
   default_safe_integers: RefCell<bool>,
+  memory: bool,
 }
 
 #[napi(object)]
@@ -42,6 +43,10 @@ pub struct Options {
 
 #[napi]
 impl Database {
+    #[napi(getter)]
+    pub fn memory(&self) -> bool {
+        self.memory
+    }
   #[napi(constructor)]
   pub fn new(path: String, _opts: Option<Options>) -> Result<Self> {
     let rt = runtime()?;
@@ -54,11 +59,13 @@ impl Database {
     };
     let conn = db.connect().map_err(Error::from)?;
     let default_safe_integers = RefCell::new(false);
+    let memory = path == ":memory:";
     Ok(Database {
       path,
       db,
       conn: Arc::new(Mutex::new(conn)),
       default_safe_integers,
+      memory,
     })
   }
 

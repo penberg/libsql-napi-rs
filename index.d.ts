@@ -12,6 +12,7 @@ export interface RunResult {
   lastInsertRowid: number
 }
 export declare class Database {
+  get memory(): boolean
   constructor(path: string, opts?: Options | undefined | null)
   prepare(sql: string): Statement
   transaction(func: (...args: any[]) => any): (...args: any[]) => any
