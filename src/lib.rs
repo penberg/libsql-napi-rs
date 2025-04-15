@@ -626,13 +626,15 @@ fn convert_row_raw(
     };
 
     // Create appropriate JS value based on SQLite value type
-    let js_value: JsUnknown = match value {
+    let js_value = match value {
       libsql::Value::Null => env.get_null()?.into_unknown(),
       libsql::Value::Integer(v) => {
         if safe_ints {
-          env.create_bigint_from_i64(v)?.into_unknown()
+          let bigint = env.create_bigint_from_i64(v)?;
+          bigint.into_unknown()?
         } else {
-          env.create_double(v as f64)?.into_unknown()
+          let double = env.create_double(v as f64)?;
+          double.into_unknown()
         }
       }
       libsql::Value::Real(v) => env.create_double(v)?.into_unknown(),
@@ -645,6 +647,5 @@ fn convert_row_raw(
 
     js_array.set(idx as u32, js_value)?;
   }
-  let ret = js_array.coerce_to_object()?;
-  Ok(ret.into_unknown())
+  Ok(js_array.coerce_to_object()?.into_unknown())
 }
