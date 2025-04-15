@@ -386,7 +386,7 @@ impl Statement {
       let row = rows.next().await.map_err(Error::from)?;
       // Calculate duration
       let duration = start.elapsed().as_secs_f64();
-      match row {
+      let result = match row {
         Some(row) => {
           if raw {
             // Convert row to array
@@ -413,7 +413,9 @@ impl Statement {
           let undefined = env.get_undefined()?;
           Ok(undefined.into_unknown())
         }
-      }
+      };
+      stmt.reset();
+      result
     })
   }
 
