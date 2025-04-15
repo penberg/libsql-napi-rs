@@ -452,6 +452,20 @@ impl Statement {
   }
 
   #[napi]
+  pub fn raw(&self, raw: Option<bool>) -> Result<&Self> {
+    let rt = runtime()?;
+    let returns_data = rt.block_on(async move {
+      let mut stmt = self.stmt.lock().await;
+      !stmt.columns().is_empty()
+    });
+    if !returns_data {
+      return Err(napi::Error::from_reason("The raw() method is only for statements that return data"));
+    }
+    self.raw.replace(raw.unwrap_or(true));
+    Ok(self)
+  }
+
+  #[napi]
   pub fn get(&self, env: Env, params: Option<napi::JsUnknown>) -> Result<napi::JsUnknown> {
     let rt = runtime()?;
 
@@ -508,12 +522,6 @@ impl Statement {
       stmt.reset();
       result
     })
-  }
-
-  #[napi]
-  pub fn raw(&self, raw: Option<bool>) -> Result<&Self> {
-    self.raw.replace(raw.unwrap_or(true));
-    Ok(self)
   }
 
   #[napi]
