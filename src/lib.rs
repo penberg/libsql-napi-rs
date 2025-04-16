@@ -484,12 +484,6 @@ impl Statement {
                 // Convert row to object
                 convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
 
-                // Add metadata
-                let mut metadata = env.create_object()?;
-                let js_duration = env.create_double(0.0)?;
-                metadata.set_named_property("duration", js_duration)?;
-                js_object.set_named_property("_metadata", metadata)?;
-
                 js_object.into_unknown()
             };
             // Pluck support: if pluck is enabled, extract the first column from the result
