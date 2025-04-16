@@ -112,21 +112,22 @@ class Database {
    * Interrupts the database connection.
    */
   interrupt() {
-    throw new Error("not implemented");
+    this.db.interrupt();
   }
 
   /**
    * Closes the database connection.
    */
   close() {
-    throw new Error("not implemented");
+    this.db.close();
   }
 
   /**
    * Toggle 64-bit integer support.
    */
   defaultSafeIntegers(toggle) {
-    throw new Error("not implemented");
+    this.db.defaultSafeIntegers(toggle);
+    return this;
   }
 
   unsafeMode(...args) {
@@ -169,7 +170,11 @@ class Statement {
    * Executes the SQL statement and returns an info object.
    */
   run(...bindParameters) {
-    throw new Error("not implemented");
+    try {
+      return this.stmt.run(...bindParameters);
+    } catch (err) {
+      throw convertError(err);
+    }
   }
 
   /**
@@ -178,7 +183,11 @@ class Statement {
    * @param bindParameters - The bind parameters for executing the statement.
    */
   get(...bindParameters) {
-    throw new Error("not implemented");
+    try {
+      return this.stmt.get(...bindParameters);
+    } catch (err) {
+      throw convertError(err);
+    }
   }
 
   /**
@@ -187,7 +196,11 @@ class Statement {
    * @param bindParameters - The bind parameters for executing the statement.
    */
   iterate(...bindParameters) {
-    throw new Error("not implemented");
+    try {
+      return this.stmt.iterate(...bindParameters);
+    } catch (err) {
+      throw convertError(err);
+    }
   }
 
   /**
@@ -196,28 +209,34 @@ class Statement {
    * @param bindParameters - The bind parameters for executing the statement.
    */
   all(...bindParameters) {
-    throw new Error("not implemented");
+    try {
+      return this.stmt.all(...bindParameters);
+    } catch (err) {
+      throw convertError(err);
+    }
   }
 
   /**
    * Interrupts the statement.
    */
   interrupt() {
-    throw new Error("not implemented");
+    this.stmt.interrupt();
+    return this;
   }
 
   /**
    * Returns the columns in the result set returned by this prepared statement.
    */
   columns() {
-    return statementColumns.call(this.stmt);
+    return this.stmt.columns();
   }
 
   /**
    * Toggle 64-bit integer support.
    */
   safeIntegers(toggle) {
-    throw new Error("not implemented");
+    this.stmt.safeIntegers(toggle);
+    return this;
   }
 }
 
