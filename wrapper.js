@@ -200,7 +200,8 @@ class Statement {
    * @param pluckMode Enable or disable pluck mode. If you don't pass the parameter, pluck mode is enabled.
    */
   pluck(pluckMode) {
-    throw new Error("not implemented");
+    this.stmt.pluck(pluckMode);
+    return this;
   }
 
   get reader() {
