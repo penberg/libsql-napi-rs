@@ -449,7 +449,7 @@ const connect = async (path_opt, options = {}) => {
   if (provider === "libsql") {
     const database = process.env.LIBSQL_DATABASE ?? path;
     const x = await import("libsql");
-    const db = new x.Database(database, options);
+    const db = new x.default(database, options);
     return [db, x.SqliteError, provider];
   }
   if (provider == "sqlite") {

@@ -1,7 +1,7 @@
 {
   "name": "libsql",
   "version": "0.0.0",
-  "main": "index.js",
+  "main": "wrapper.js",
   "types": "index.d.ts",
   "napi": {
     "name": "libsql",
