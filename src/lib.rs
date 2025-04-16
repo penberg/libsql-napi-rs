@@ -5,8 +5,8 @@
 #[macro_use]
 extern crate napi_derive;
 
-use napi::{Env, JsUnknown, Result, ValueType, JsObject};
-use napi::bindgen_prelude::{Buffer, FunctionCallContext, Array, JsFunction, Function};
+use napi::bindgen_prelude::{Array, Buffer, Function, FunctionCallContext, JsFunction};
+use napi::{Env, JsObject, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
 use std::{cell::RefCell, sync::Arc};
 use tokio::{runtime::Runtime, sync::Mutex};
@@ -25,7 +25,11 @@ pub struct SqliteError {
 impl SqliteError {
     #[napi(constructor)]
     pub fn new(message: String, code: String, raw_code: Option<String>) -> Self {
-        SqliteError { message, code, raw_code }
+        SqliteError {
+            message,
+            code,
+            raw_code,
+        }
     }
 }
 
@@ -45,9 +49,7 @@ impl From<Error> for napi::Error {
                 let code_str = libsql::ffi::code_to_str(*code);
                 throw_sqlite_error(msg.clone(), code_str.to_string(), Some(code.to_string()))
             }
-            _ => {
-                throw_sqlite_error(error.0.to_string(), "SQLITE_ERROR".to_string(), None)
-            }
+            _ => throw_sqlite_error(error.0.to_string(), "SQLITE_ERROR".to_string(), None),
         }
     }
 }
@@ -120,6 +122,20 @@ impl Database {
             default_safe_integers,
             memory,
         })
+    }
+
+    #[napi(js_name = "inTransaction")]
+    pub fn in_transaction(&self) -> Result<bool> {
+        let rt = runtime()?;
+        let conn = match &self.conn {
+            Some(conn) => conn.clone(),
+            None => return Ok(false),
+        };
+        let conn_ = conn.clone();
+        Ok(rt.block_on(async move {
+            let conn = conn_.lock().await;
+            !conn.is_autocommit()
+        }))
     }
 
     #[napi]
@@ -638,42 +654,43 @@ impl StatementRows {
         raw: bool,
     ) -> Result<napi::JsObject> {
         let mut js_obj = env.create_object()?;
-        let next_fn: napi::bindgen_prelude::Function<'_, (), napi::JsObject> = env.create_function_from_closure("next", move |ctx: FunctionCallContext| {
-            let rt = runtime()?;
-            let rows = rows.clone();
-            rt.block_on(async move {
-                let mut rows = rows.lock().await;
-                let next_row = rows.next().await.map_err(Error::from)?;
-                let mut result_obj = ctx.env.create_object()?;
-                match next_row {
-                    Some(row) => {
-                        let value = if raw {
-                            convert_row_raw(&ctx.env, safe_ints, &rows, &row)?.into_unknown()
-                        } else {
-                            let mut js_object = ctx.env.create_object()?;
-                            convert_row(&ctx.env, safe_ints, &mut js_object, &rows, &row)?;
-                            js_object.into_unknown()
-                        };
-                        result_obj.set_named_property("value", value)?;
-                        result_obj.set_named_property("done", ctx.env.get_boolean(false)?)?;
+        let next_fn: napi::bindgen_prelude::Function<'_, (), napi::JsObject> = env
+            .create_function_from_closure("next", move |ctx: FunctionCallContext| {
+                let rt = runtime()?;
+                let rows = rows.clone();
+                rt.block_on(async move {
+                    let mut rows = rows.lock().await;
+                    let next_row = rows.next().await.map_err(Error::from)?;
+                    let mut result_obj = ctx.env.create_object()?;
+                    match next_row {
+                        Some(row) => {
+                            let value = if raw {
+                                convert_row_raw(&ctx.env, safe_ints, &rows, &row)?.into_unknown()
+                            } else {
+                                let mut js_object = ctx.env.create_object()?;
+                                convert_row(&ctx.env, safe_ints, &mut js_object, &rows, &row)?;
+                                js_object.into_unknown()
+                            };
+                            result_obj.set_named_property("value", value)?;
+                            result_obj.set_named_property("done", ctx.env.get_boolean(false)?)?;
+                        }
+                        None => {
+                            result_obj.set_named_property("done", ctx.env.get_boolean(true)?)?;
+                        }
                     }
-                    None => {
-                        result_obj.set_named_property("done", ctx.env.get_boolean(true)?)?;
-                    }
-                }
-                Ok(result_obj)
-            })
-        })?;
+                    Ok(result_obj)
+                })
+            })?;
         js_obj.set_named_property("next", next_fn)?;
         // Create iterator function
-let iterator_fn: Function<'_, (), Result<JsObject>> = env.create_function_from_closure("iterator", move |ctx: FunctionCallContext| {
-    Ok(ctx.this())
-})?;
+        let iterator_fn: Function<'_, (), Result<JsObject>> = env
+            .create_function_from_closure("iterator", move |ctx: FunctionCallContext| {
+                Ok(ctx.this())
+            })?;
 
         // Get Symbol.iterator
         let global = env.get_global()?;
-        let symbol_ctor = global
-            .get_named_property::<JsFunction>("Symbol")?;
+        let symbol_ctor = global.get_named_property::<JsFunction>("Symbol")?;
         let symbol_ctor_obj = symbol_ctor.coerce_to_object()?;
         let symbol_iterator = symbol_ctor_obj.get_named_property::<napi::JsSymbol>("iterator")?;
         // Attach [Symbol.iterator]
@@ -761,10 +778,12 @@ fn convert_row_raw(
                 } else {
                     Ok(env.create_double(v as f64)?.into_unknown())
                 }
-            },
+            }
             libsql::Value::Real(v) => Ok(env.create_double(v)?.into_unknown()),
             libsql::Value::Text(v) => Ok(env.create_string(&v)?.into_unknown()),
-            libsql::Value::Blob(v) => env.create_buffer_with_data(v.clone()).map(|b| b.into_unknown()), 
+            libsql::Value::Blob(v) => env
+                .create_buffer_with_data(v.clone())
+                .map(|b| b.into_unknown()),
         }?;
 
         js_array.set(idx as u32, js_value)?;

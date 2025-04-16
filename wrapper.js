@@ -31,6 +31,14 @@ class Database {
   constructor(path, opts) {
     this.db = new NativeDb(path, opts);
     this.memory = this.db.memory
+    const db = this.db;
+    Object.defineProperties(this, {
+      inTransaction: {
+        get() {
+          return db.inTransaction();
+        }
+      },
+    });
   }
 
   sync() {
@@ -60,11 +68,44 @@ class Database {
    * @param {function} fn - The function to wrap in a transaction.
    */
   transaction(fn) {
-    throw new Error("not implemented");
+    if (typeof fn !== "function")
+      throw new TypeError("Expected first argument to be a function");
+
+    const db = this;
+    const wrapTxn = (mode) => {
+      return (...bindParameters) => {
+        db.exec("BEGIN " + mode);
+        try {
+          const result = fn(...bindParameters);
+          db.exec("COMMIT");
+          return result;
+        } catch (err) {
+          db.exec("ROLLBACK");
+          throw err;
+        }
+      };
+    };
+    const properties = {
+      default: { value: wrapTxn("") },
+      deferred: { value: wrapTxn("DEFERRED") },
+      immediate: { value: wrapTxn("IMMEDIATE") },
+      exclusive: { value: wrapTxn("EXCLUSIVE") },
+      database: { value: this, enumerable: true },
+    };
+    Object.defineProperties(properties.default.value, properties);
+    Object.defineProperties(properties.deferred.value, properties);
+    Object.defineProperties(properties.immediate.value, properties);
+    Object.defineProperties(properties.exclusive.value, properties);
+    return properties.default.value;
   }
 
   pragma(source, options) {
-    throw new Error("not implemented");
+    if (options == null) options = {};
+    if (typeof source !== 'string') throw new TypeError('Expected first argument to be a string');
+    if (typeof options !== 'object') throw new TypeError('Expected second argument to be an options object');
+    const simple = options['simple'];
+    const stmt = this.prepare(`PRAGMA ${source}`, this, true);
+    return simple ? stmt.pluck().get() : stmt.all();
   }
 
   backup(filename, options) {

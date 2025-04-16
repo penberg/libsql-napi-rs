@@ -20,6 +20,7 @@ export declare class SqliteError {
 export declare class Database {
   get memory(): boolean
   constructor(path: string, opts?: Options | undefined | null)
+  inTransaction(): boolean
   prepare(sql: string): Statement
   pragma(): void
   backup(): void
