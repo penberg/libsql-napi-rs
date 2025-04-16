@@ -1,10 +1,19 @@
 "use strict";
 
-const { Database: NativeDb, SqliteError } = require("./index.js");
+const { Database: NativeDb } = require("./index.js");
+const { SqliteError } require("./sqlite-error.js");
 
 function convertError(err) {
-  if (err.libsqlError) {
-    return new SqliteError(err.message, err.code, err.rawCode);
+  // Handle errors from Rust with JSON-encoded message
+  if (typeof err.message === 'string') {
+    try {
+      const data = JSON.parse(err.message);
+      if (data && data.libsqlError) {
+        return new SqliteError(data.message, data.code, data.rawCode);
+      }
+    } catch (_) {
+      // Not JSON, ignore
+    }
   }
   return err;
 }
@@ -20,7 +29,8 @@ class Database {
    * @param {string} path - Path to the database file.
    */
   constructor(path, opts) {
-    throw new Error("not implemented");
+    this.db = new NativeDb(path, opts);
+    this.memory = this.db.memory
   }
 
   sync() {
@@ -37,7 +47,11 @@ class Database {
    * @param {string} sql - The SQL statement string to prepare.
    */
   prepare(sql) {
-    throw new Error("not implemented");
+    try {
+      return new Statement(this.db.prepare(sql));
+    } catch (err) {
+      throw convertError(err);
+    }
   }
 
   /**
@@ -87,7 +101,11 @@ class Database {
    * @param {string} sql - The SQL statement string to execute.
    */
   exec(sql) {
-    throw new Error("not implemented");
+    try {
+      this.db.exec(sql);
+    } catch (err) {
+      throw convertError(err);
+    }
   }
 
   /**
@@ -121,7 +139,7 @@ class Database {
  */
 class Statement {
   constructor(stmt) {
-    throw new Error("not implemented");
+    this.stmt = stmt;
   }
 
   /**
@@ -130,7 +148,8 @@ class Statement {
    * @param raw Enable or disable raw mode. If you don't pass the parameter, raw mode is enabled.
    */
   raw(raw) {
-    throw new Error("not implemented");
+    this.stmt.raw(raw);
+    return this;
   }
 
   /**

@@ -38,8 +38,13 @@ impl From<Error> for napi::Error {
 }
 
 pub fn throw_sqlite_error(message: String, code: String, raw_code: Option<String>) -> napi::Error {
-    // napi-rs 3.x does not support from_any, so fallback to from_reason
-    napi::Error::from_reason(message)
+    let err_json = serde_json::json!({
+        "libsqlError": true,
+        "message": message,
+        "code": code,
+        "rawCode": raw_code
+    });
+    napi::Error::from_reason(err_json.to_string())
 }
 
 impl From<libsql::Error> for Error {
