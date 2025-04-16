@@ -1,11 +1,12 @@
 #![deny(clippy::all)]
 #![allow(non_snake_case)]
+#![allow(deprecated)]
 
 #[macro_use]
 extern crate napi_derive;
 
-
-use napi::{bindgen_prelude::Array, CallContext, Env, JsFunction, JsUnknown, Result, ValueType};
+use napi::{Env, JsUnknown, Result, ValueType, JsObject};
+use napi::bindgen_prelude::{Buffer, FunctionCallContext, Array, JsFunction, Function};
 use once_cell::sync::OnceCell;
 use std::{cell::RefCell, sync::Arc};
 use tokio::{runtime::Runtime, sync::Mutex};
@@ -32,8 +33,13 @@ struct Error(libsql::Error);
 
 impl From<Error> for napi::Error {
     fn from(error: Error) -> Self {
-        napi::Error::from_reason(error.0.to_string())
+        throw_sqlite_error(error.0.to_string(), "SQLITE_ERROR".to_string(), None)
     }
+}
+
+pub fn throw_sqlite_error(message: String, code: String, raw_code: Option<String>) -> napi::Error {
+    // napi-rs 3.x does not support from_any, so fallback to from_reason
+    napi::Error::from_reason(message)
 }
 
 impl From<libsql::Error> for Error {
@@ -119,20 +125,6 @@ impl Database {
     }
 
     #[napi]
-    pub fn transaction(&self, env: Env, func: napi::JsFunction) -> Result<napi::JsFunction> {
-        let conn = match &self.conn {
-            Some(conn) => conn.clone(),
-            None => return Err(throw_database_closed_error(&env).into()),
-        };
-
-        // Create a simple transaction function with empty mode
-        let tx_function = transaction(env, &func, conn, "")?;
-
-        // For now, just return the basic transaction function
-        Ok(tx_function)
-    }
-
-    #[napi]
     pub fn pragma(&self) -> Result<()> {
         // TODO: Implement pragma
         Ok(())
@@ -209,23 +201,6 @@ impl Database {
     pub fn unsafeMode(&self) -> Result<()> {
         todo!();
     }
-}
-
-fn transaction(
-    env: Env,
-    func: &napi::JsFunction,
-    _conn: Arc<tokio::sync::Mutex<libsql::Connection>>,
-    mode: &str,
-) -> Result<napi::JsFunction> {
-    let _begin = format!("BEGIN {}", mode);
-    let _func_ref = env.create_reference(func)?;
-    let tx_function = env.create_function_from_closure(
-        "transaction",
-        move |ctx: CallContext| -> Result<napi::JsFunction> {
-            todo!();
-        },
-    )?;
-    Ok(tx_function)
 }
 
 fn is_remote_path(path: &str) -> bool {
@@ -349,9 +324,9 @@ fn map_value(value: JsUnknown) -> Result<libsql::Value> {
 
             // Check if it's a buffer
             if obj.is_buffer()? {
-                let js_buf = napi::JsBuffer::try_from(obj.into_unknown())?;
-                let data = js_buf.into_value()?;
-                return Ok(libsql::Value::Blob(data.to_vec()));
+                let buf = napi::JsBuffer::try_from(obj.into_unknown())?;
+                let data = buf.into_value()?.to_vec();
+                return Ok(libsql::Value::Blob(data));
             }
 
             if obj.is_typedarray()? {
@@ -499,10 +474,22 @@ impl Statement {
         let pluck = *self.pluck.borrow();
         while let Some(row) = rt.block_on(rows.next()).map_err(Error::from)? {
             let js_value = if raw {
-                convert_row_raw(&env, safe_ints, &rows, &row)?
+                // Convert row to array
+                let js_array = convert_row_raw(&env, safe_ints, &rows, &row)?;
+                js_array.into_unknown()
             } else {
+                // Create an object
                 let mut js_object = env.create_object()?;
+
+                // Convert row to object
                 convert_row(&env, safe_ints, &mut js_object, &rows, &row)?;
+
+                // Add metadata
+                let mut metadata = env.create_object()?;
+                let js_duration = env.create_double(0.0)?;
+                metadata.set_named_property("duration", js_duration)?;
+                js_object.set_named_property("_metadata", metadata)?;
+
                 js_object.into_unknown()
             };
             // Pluck support: if pluck is enabled, extract the first column from the result
@@ -584,7 +571,7 @@ impl Statement {
                     if raw {
                         // Convert row to array
                         let js_array = convert_row_raw(&env, safe_ints, &rows, &row)?;
-                        Ok(js_array)
+                        Ok(js_array.into_unknown())
                     } else {
                         // Create an object
                         let mut js_object = env.create_object()?;
@@ -636,7 +623,7 @@ impl StatementRows {
         raw: bool,
     ) -> Result<napi::JsObject> {
         let mut js_obj = env.create_object()?;
-        let next_fn = env.create_function_from_closure("next", move |ctx: CallContext| {
+        let next_fn: napi::bindgen_prelude::Function<'_, (), napi::JsObject> = env.create_function_from_closure("next", move |ctx: FunctionCallContext| {
             let rt = runtime()?;
             let rows = rows.clone();
             rt.block_on(async move {
@@ -646,7 +633,7 @@ impl StatementRows {
                 match next_row {
                     Some(row) => {
                         let value = if raw {
-                            convert_row_raw(&ctx.env, safe_ints, &rows, &row)?
+                            convert_row_raw(&ctx.env, safe_ints, &rows, &row)?.into_unknown()
                         } else {
                             let mut js_object = ctx.env.create_object()?;
                             convert_row(&ctx.env, safe_ints, &mut js_object, &rows, &row)?;
@@ -664,17 +651,16 @@ impl StatementRows {
         })?;
         js_obj.set_named_property("next", next_fn)?;
         // Create iterator function
-        let iterator_fn = env
-            .create_function_from_closure("iterator", move |ctx: CallContext| {
-                Ok(ctx.this_unchecked::<napi::JsObject>())
-            })?;
+let iterator_fn: Function<'_, (), Result<JsObject>> = env.create_function_from_closure("iterator", move |ctx: FunctionCallContext| {
+    Ok(ctx.this())
+})?;
 
         // Get Symbol.iterator
         let global = env.get_global()?;
         let symbol_ctor = global
-            .get_named_property::<napi::JsFunction>("Symbol")?
-            .coerce_to_object()?; // Convert JsFunction to JsObject
-        let symbol_iterator = symbol_ctor.get_named_property::<napi::JsSymbol>("iterator")?;
+            .get_named_property::<JsFunction>("Symbol")?;
+        let symbol_ctor_obj = symbol_ctor.coerce_to_object()?;
+        let symbol_iterator = symbol_ctor_obj.get_named_property::<napi::JsSymbol>("iterator")?;
         // Attach [Symbol.iterator]
         js_obj.set_property(symbol_iterator, iterator_fn)?;
         Ok(js_obj)
@@ -727,8 +713,8 @@ fn convert_row(
                 result.set_named_property(column_name, js_str)?;
             }
             libsql::Value::Blob(v) => {
-                let js_buf = env.create_buffer_with_data(v.clone())?;
-                result.set_named_property(column_name, js_buf.into_unknown())?;
+                let js_buf = Buffer::from(v.clone());
+                result.set_named_property(column_name, js_buf)?;
             }
         }
     }
@@ -753,23 +739,18 @@ fn convert_row_raw(
 
         // Create appropriate JS value based on SQLite value type
         let js_value = match value {
-            libsql::Value::Null => env.get_null()?.into_unknown(),
+            libsql::Value::Null => Ok(env.get_null()?.into_unknown()),
             libsql::Value::Integer(v) => {
                 if safe_ints {
-                    let bigint = env.create_bigint_from_i64(v)?;
-                    bigint.into_unknown()?
+                    Ok(env.create_bigint_from_i64(v)?.into_unknown()?)
                 } else {
-                    let double = env.create_double(v as f64)?;
-                    double.into_unknown()
+                    Ok(env.create_double(v as f64)?.into_unknown())
                 }
-            }
-            libsql::Value::Real(v) => env.create_double(v)?.into_unknown(),
-            libsql::Value::Text(v) => env.create_string(&v)?.into_unknown(),
-            libsql::Value::Blob(v) => {
-                let buffer = env.create_buffer_with_data(v.clone())?;
-                buffer.into_unknown()
-            }
-        };
+            },
+            libsql::Value::Real(v) => Ok(env.create_double(v)?.into_unknown()),
+            libsql::Value::Text(v) => Ok(env.create_string(&v)?.into_unknown()),
+            libsql::Value::Blob(v) => env.create_buffer_with_data(v.clone()).map(|b| b.into_unknown()), 
+        }?;
 
         js_array.set(idx as u32, js_value)?;
     }
