@@ -33,14 +33,30 @@ struct Error(libsql::Error);
 
 impl From<Error> for napi::Error {
     fn from(error: Error) -> Self {
-        throw_sqlite_error(error.0.to_string(), "SQLITE_ERROR".to_string(), None)
+        use libsql::Error as E;
+        match &error.0 {
+            E::SqliteFailure(code, msg) => {
+                // code is c_int, convert to string like "SQLITE_CONSTRAINT" or fallback to number
+                let code_str = libsql::ffi::code_to_str(*code);
+                throw_sqlite_error(msg.clone(), code_str.to_string(), Some(code.to_string()))
+            }
+            E::RemoteSqliteFailure(_, code, msg) => {
+                // code is i32, msg is String
+                let code_str = libsql::ffi::code_to_str(*code);
+                throw_sqlite_error(msg.clone(), code_str.to_string(), Some(code.to_string()))
+            }
+            _ => {
+                throw_sqlite_error(error.0.to_string(), "SQLITE_ERROR".to_string(), None)
+            }
+        }
     }
 }
 
 pub fn throw_sqlite_error(message: String, code: String, raw_code: Option<String>) -> napi::Error {
+    // 'message' must be the raw SQLite error string (e.g. 'near "SYNTAX": syntax error')
     let err_json = serde_json::json!({
         "libsqlError": true,
-        "message": message,
+        "message": message, // do NOT wrap or format this string!
         "code": code,
         "rawCode": raw_code
     });

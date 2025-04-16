@@ -1,7 +1,7 @@
 "use strict";
 
 const { Database: NativeDb } = require("./index.js");
-const { SqliteError } require("./sqlite-error.js");
+const SqliteError = require("./sqlite-error.js");
 
 function convertError(err) {
   // Handle errors from Rust with JSON-encoded message
