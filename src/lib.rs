@@ -9,6 +9,7 @@ use napi::bindgen_prelude::{Array, Buffer, Function, FunctionCallContext, JsFunc
 use napi::{Env, JsObject, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
 use std::{cell::RefCell, sync::Arc};
+use std::time::Duration;
 use tokio::{runtime::Runtime, sync::Mutex};
 
 #[napi]
@@ -156,7 +157,7 @@ pub struct Database {
 
 #[napi(object)]
 pub struct Options {
-    pub timeout: Option<u32>,
+    pub timeout: Option<f64>,
 }
 
 #[napi]
@@ -177,7 +178,7 @@ impl Database {
         self.memory
     }
     #[napi(constructor)]
-    pub fn new(path: String, _opts: Option<Options>) -> Result<Self> {
+    pub fn new(path: String, opts: Option<Options>) -> Result<Self> {
         let rt = runtime()?;
         let remote = is_remote_path(&path);
         let db = if remote {
@@ -189,6 +190,13 @@ impl Database {
         let conn = db.connect().map_err(Error::from)?;
         let default_safe_integers = RefCell::new(false);
         let memory = path == ":memory:";
+        let timeout = match opts {
+            Some(opts) => opts.timeout.unwrap_or(0.0),
+            None => 0.0,
+        };
+        if timeout > 0.0 {
+            conn.busy_timeout(Duration::from_millis(timeout as u64)).map_err(Error::from)?
+        }
         Ok(Database {
             path,
             db,
