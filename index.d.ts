@@ -14,8 +14,7 @@ export interface RunResult {
 export declare class SqliteError {
   message: string
   code: string
-  rawCode?: string
-  constructor(message: string, code: string, rawCode?: string | undefined | null)
+  rawCode: number
 }
 export declare class Database {
   get memory(): boolean
