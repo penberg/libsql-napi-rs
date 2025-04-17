@@ -18,7 +18,17 @@ test.serial("Statement.get() returning duration", async (t) => {
   t.log(info._metadata?.duration)
 });
 
-test.serial("Database.authorizer()", async (t) => {
+test.serial("Database.authorizer() [allow]", async (t) => {
+  const db = t.context.db;
+  const authorizer = db.authorizer(() => {
+    return "allow";
+  });
+  const stmt = db.prepare("SELECT * FROM users");
+  const rows = stmt.all();
+  t.is(rows.length, 2);
+});
+
+test.serial("Database.authorizer() [deny]", async (t) => {
   const db = t.context.db;
   const authorizer = db.authorizer(() => {
     return "deny";
