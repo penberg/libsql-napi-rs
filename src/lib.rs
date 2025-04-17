@@ -6,11 +6,11 @@
 extern crate napi_derive;
 
 use napi::bindgen_prelude::{
-    Array, Buffer, FromNapiValue, Function, FunctionCallContext, JsFunction,
+    Array, Buffer, FromNapiValue, JsFunction,
 };
-use napi::threadsafe_function::ThreadsafeFunction;
-use napi::threadsafe_function::ThreadsafeFunctionCallMode;
-use napi::{Env, JsObject, JsUnknown, Result, ValueType};
+
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadSafeCallContext};
+use napi::{Env, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
 use std::time::Duration;
 use std::{cell::RefCell, sync::Arc};
@@ -160,8 +160,6 @@ pub struct Database {
     conn: Option<Arc<tokio::sync::Mutex<libsql::Connection>>>,
     default_safe_integers: RefCell<bool>,
     memory: bool,
-    // Store the JS authorizer callback as a ThreadsafeFunction
-    authorizer: Option<ThreadsafeFunction<AuthorizerArgs, napi::Error>>,
 }
 
 #[napi(object)]
@@ -181,19 +179,13 @@ impl Database {
     pub fn authorizer(&mut self, env: Env, hook: JsFunction) -> Result<()> {
         use libsql::Authorization;
         use std::sync::Arc;
-
-        let tsfn: ThreadsafeFunction<AuthorizerArgs, napi::Error> = hook
-            .create_threadsafe_function(0, |ctx| {
-                // Placeholder: will call JS later
-                Ok(vec![])
-            })?;
-        self.authorizer = Some(tsfn);
-
+        let tsfn: ThreadsafeFunction<u32> = hook.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<u32>| {
+            // ctx.value is the Rust value passed from other threads.
+            // Convert it to a JsNumber and return as Vec<JsNumber> (arguments to JS callback).
+            ctx.env.create_uint32(ctx.value).map(|js_num| vec![js_num])
+        })?;
         if let Some(conn) = &self.conn {
-            let authorizer = self.authorizer.as_ref().unwrap().clone();
             let hook = Arc::new(move |_ctx: &libsql::AuthContext| -> Authorization {
-                // For now, just call the JS callback with dummy args
-                let _ = authorizer.call(AuthorizerArgs, ThreadsafeFunctionCallMode::NonBlocking);
                 Authorization::Deny
             });
             let rt = runtime()?;
@@ -232,7 +224,6 @@ impl Database {
                 .map_err(Error::from)?
         }
         Ok(Database {
-            authorizer: None,
             path,
             db,
             conn: Some(Arc::new(Mutex::new(conn))),
@@ -782,8 +773,8 @@ impl StatementRows {
         raw: bool,
     ) -> Result<napi::JsObject> {
         let mut js_obj = env.create_object()?;
-        let next_fn: napi::bindgen_prelude::Function<'_, (), napi::JsObject> = env
-            .create_function_from_closure("next", move |ctx: FunctionCallContext| {
+        let next_fn: JsFunction = env
+            .create_function_from_closure("next", move |ctx| {
                 let rt = runtime()?;
                 let rows = rows.clone();
                 rt.block_on(async move {
@@ -811,9 +802,9 @@ impl StatementRows {
             })?;
         js_obj.set_named_property("next", next_fn)?;
         // Create iterator function
-        let iterator_fn: Function<'_, (), Result<JsObject>> = env
-            .create_function_from_closure("iterator", move |ctx: FunctionCallContext| {
-                Ok(ctx.this())
+        let iterator_fn: JsFunction = env
+            .create_function_from_closure("iterator", move |ctx| {
+                Ok(ctx.this::<napi::JsObject>())
             })?;
 
         // Get Symbol.iterator

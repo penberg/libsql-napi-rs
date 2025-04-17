@@ -310,9 +310,10 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { SqliteError, Database, Statement, StatementRows } = nativeBinding
+const { SqliteError, AuthorizerArgs, Database, Statement, StatementRows } = nativeBinding
 
 module.exports.SqliteError = SqliteError
+module.exports.AuthorizerArgs = AuthorizerArgs
 module.exports.Database = Database
 module.exports.Statement = Statement
 module.exports.StatementRows = StatementRows

@@ -16,7 +16,9 @@ export declare class SqliteError {
   code: string
   rawCode: number
 }
+export declare class AuthorizerArgs { }
 export declare class Database {
+  authorizer(hook: (...args: any[]) => any): void
   get memory(): boolean
   constructor(path: string, opts?: Options | undefined | null)
   inTransaction(): boolean

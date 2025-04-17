@@ -8,8 +8,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 libsql = { version = "0.9.3", features = ["encryption"] }
-napi = { version = "3.0.0-alpha.33", default-features = false, features = ["napi6"] }
-napi-derive = "3.0.0-alpha.29"
+napi = { version = "2", default-features = false, features = ["napi6"] }
+napi-derive = "2"
 once_cell = "1.18.0"
 serde_json = "1.0.140"
 tokio = { version = "1.29.1", features = [ "rt-multi-thread" ] }
