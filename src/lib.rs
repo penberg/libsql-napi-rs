@@ -5,11 +5,15 @@
 #[macro_use]
 extern crate napi_derive;
 
-use napi::bindgen_prelude::{Array, Buffer, Function, FunctionCallContext, JsFunction, FromNapiValue};
+use napi::bindgen_prelude::{
+    Array, Buffer, FromNapiValue, Function, FunctionCallContext, JsFunction,
+};
+use napi::threadsafe_function::ThreadsafeFunction;
+use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi::{Env, JsObject, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
-use std::{cell::RefCell, sync::Arc};
 use std::time::Duration;
+use std::{cell::RefCell, sync::Arc};
 use tokio::{runtime::Runtime, sync::Mutex};
 
 #[napi]
@@ -147,22 +151,22 @@ impl From<libsql::Error> for Error {
 }
 
 #[napi]
+struct AuthorizerArgs;
+
+#[napi]
 pub struct Database {
     path: String,
     db: libsql::Database,
     conn: Option<Arc<tokio::sync::Mutex<libsql::Connection>>>,
     default_safe_integers: RefCell<bool>,
     memory: bool,
+    // Store the JS authorizer callback as a ThreadsafeFunction
+    authorizer: Option<ThreadsafeFunction<AuthorizerArgs, napi::Error>>,
 }
 
 #[napi(object)]
 pub struct Options {
     pub timeout: Option<f64>,
-}
-
-#[napi]
-impl Database {
-    // ...
 }
 
 impl Drop for Database {
@@ -173,6 +177,35 @@ impl Drop for Database {
 
 #[napi]
 impl Database {
+    #[napi]
+    pub fn authorizer(&mut self, env: Env, hook: JsFunction) -> Result<()> {
+        use libsql::Authorization;
+        use std::sync::Arc;
+
+        let tsfn: ThreadsafeFunction<AuthorizerArgs, napi::Error> = hook
+            .create_threadsafe_function(0, |ctx| {
+                // Placeholder: will call JS later
+                Ok(vec![])
+            })?;
+        self.authorizer = Some(tsfn);
+
+        if let Some(conn) = &self.conn {
+            let authorizer = self.authorizer.as_ref().unwrap().clone();
+            let hook = Arc::new(move |_ctx: &libsql::AuthContext| -> Authorization {
+                // For now, just call the JS callback with dummy args
+                let _ = authorizer.call(AuthorizerArgs, ThreadsafeFunctionCallMode::NonBlocking);
+                Authorization::Deny
+            });
+            let rt = runtime()?;
+            let conn = conn.clone();
+            rt.block_on(async move {
+                let mut conn = conn.lock().await;
+                let _ = conn.authorizer(Some(hook));
+            });
+        }
+        Ok(())
+    }
+
     #[napi(getter)]
     pub fn memory(&self) -> bool {
         self.memory
@@ -195,9 +228,11 @@ impl Database {
             None => 0.0,
         };
         if timeout > 0.0 {
-            conn.busy_timeout(Duration::from_millis(timeout as u64)).map_err(Error::from)?
+            conn.busy_timeout(Duration::from_millis(timeout as u64))
+                .map_err(Error::from)?
         }
         Ok(Database {
+            authorizer: None,
             path,
             db,
             conn: Some(Arc::new(Mutex::new(conn))),
@@ -435,7 +470,9 @@ fn map_value(value: JsUnknown) -> Result<libsql::Value> {
             let js_bigint = napi::JsBigInt::from_unknown(value)?;
             let (v, lossless) = js_bigint.get_i64()?;
             if !lossless {
-                return Err(napi::Error::from_reason("BigInt value is out of range for SQLite INTEGER (i64)"));
+                return Err(napi::Error::from_reason(
+                    "BigInt value is out of range for SQLite INTEGER (i64)",
+                ));
             }
             Ok(libsql::Value::Integer(v))
         }

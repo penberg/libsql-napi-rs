@@ -163,6 +163,11 @@ class Database {
     this.db.close();
   }
 
+  authorizer(hook) {
+    this.db.authorizer(hook);
+    return this;
+  }
+
   /**
    * Toggle 64-bit integer support.
    */

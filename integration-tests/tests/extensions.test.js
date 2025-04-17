@@ -18,6 +18,19 @@ test.serial("Statement.get() returning duration", async (t) => {
   t.log(info._metadata?.duration)
 });
 
+test.serial("Database.authorizer()", async (t) => {
+  const db = t.context.db;
+  const authorizer = db.authorizer(() => {
+    return "deny";
+  });
+  t.throws(() => {
+    const stmt = db.prepare("SELECT * FROM users");
+  }, {
+    instanceOf: t.context.errorType,
+    code: 'SQLITE_AUTH'
+  });
+});
+
 const connect = async (path_opt) => {
   const path = path_opt ?? "hello.db";
   const x = await import("libsql");
