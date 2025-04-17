@@ -5,8 +5,9 @@
 #[macro_use]
 extern crate napi_derive;
 
-use napi::bindgen_prelude::{Array, Buffer, Function, FunctionCallContext, JsFunction};
+use napi::bindgen_prelude::{Array, Buffer, Function, FunctionCallContext, JsFunction, FromNapiValue};
 use napi::{Env, JsObject, JsUnknown, Result, ValueType};
+use std::convert::TryInto;
 use once_cell::sync::OnceCell;
 use std::{cell::RefCell, sync::Arc};
 use tokio::{runtime::Runtime, sync::Mutex};
@@ -347,6 +348,15 @@ fn map_value(value: JsUnknown) -> Result<libsql::Value> {
             let js_num = value.coerce_to_number()?;
             let n = js_num.get_double()?;
             Ok(libsql::Value::Real(n))
+        }
+
+        ValueType::BigInt => {
+            let js_bigint = napi::JsBigInt::from_unknown(value)?;
+            let (v, lossless) = js_bigint.get_i64()?;
+            if !lossless {
+                return Err(napi::Error::from_reason("BigInt value is out of range for SQLite INTEGER (i64)"));
+            }
+            Ok(libsql::Value::Integer(v))
         }
 
         ValueType::String => {
