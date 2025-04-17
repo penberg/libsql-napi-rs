@@ -8,7 +8,7 @@ extern crate napi_derive;
 use napi::bindgen_prelude::{
     Array, Buffer, FromNapiValue, JsFunction,
 };
-
+use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadSafeCallContext};
 use napi::{Env, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
@@ -179,20 +179,34 @@ impl Database {
     pub fn authorizer(&mut self, env: Env, hook: JsFunction) -> Result<()> {
         use libsql::Authorization;
         use std::sync::Arc;
-        let tsfn: ThreadsafeFunction<u32> = hook.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<u32>| {
-            // ctx.value is the Rust value passed from other threads.
-            // Convert it to a JsNumber and return as Vec<JsNumber> (arguments to JS callback).
-            ctx.env.create_uint32(ctx.value).map(|js_num| vec![js_num])
-        })?;
+
+        let hook = Arc::new(hook);
+        let env = Arc::new(env);
+
         if let Some(conn) = &self.conn {
-            let hook = Arc::new(move |_ctx: &libsql::AuthContext| -> Authorization {
-                Authorization::Deny
+            let hook = hook.clone();
+            let env = env.clone();
+            let authorizer = Arc::new(move |_ctx: &libsql::AuthContext| -> Authorization {
+                let result = env.run_in_scope(|| {
+                    let js_string = hook.call::<napi::JsString>(None, &[])?;
+                    let rust_string = js_string.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
+                    Ok(rust_string)
+                });
+                match result {
+                    Ok(s) => match s.as_str() {
+                        "allow" => Authorization::Allow,
+                        "deny" => Authorization::Deny,
+                        "ignore" => Authorization::Ignore,
+                        _ => Authorization::Deny,
+                    },
+                    Err(_) => Authorization::Deny,
+                }
             });
             let rt = runtime()?;
             let conn = conn.clone();
             rt.block_on(async move {
                 let mut conn = conn.lock().await;
-                let _ = conn.authorizer(Some(hook));
+                let _ = conn.authorizer(Some(authorizer));
             });
         }
         Ok(())
