@@ -210,6 +210,7 @@ impl Database {
                         match cached_result.as_str() {
                             "allow" => libsql::Authorization::Allow,
                             "deny" => libsql::Authorization::Deny,
+                            "ignore" => libsql::Authorization::Ignore,
                             _ => libsql::Authorization::Deny,
                         }
                     }))).ok();

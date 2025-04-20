@@ -20,10 +20,18 @@ test.serial("Statement.get() returning duration", async (t) => {
 
 test.serial("Database.authorizer() [allow]", async (t) => {
   const db = t.context.db;
-  const authorizer = db.authorizer(cb => cb("allow"));
+  db.authorizer(cb => cb("allow"));
   const stmt = db.prepare("SELECT * FROM users");
   const rows = stmt.all();
   t.is(rows.length, 2);
+});
+
+test.serial("Database.authorizer() [ignore]", async (t) => {
+  const db = t.context.db;
+  db.authorizer(cb => cb("ignore"));
+  const stmt = db.prepare("SELECT * FROM users");
+  const rows = stmt.all();
+  t.is(rows.length, 0);
 });
 
 test.serial("Database.authorizer() [deny]", async (t) => {
@@ -36,8 +44,7 @@ test.serial("Database.authorizer() [deny]", async (t) => {
     error = err;
   }
   t.truthy(error, "Expected an error to be thrown");
-  console.error("Caught error:", error);
-  console.error("Error.message:", error && error.message);
+
   let parsed;
   try {
     parsed = JSON.parse(error.message);
