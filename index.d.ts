@@ -18,6 +18,10 @@ export declare class SqliteError {
 }
 export declare class AuthorizerArgs { }
 export declare class Database {
+  /**
+   * Only supports arity-1 (callback style) JS hooks: cb => cb("allow")
+   * This is required due to napi v2 threading restrictions.
+   */
   authorizer(hook: (...args: any[]) => any): void
   get memory(): boolean
   constructor(path: string, opts?: Options | undefined | null)

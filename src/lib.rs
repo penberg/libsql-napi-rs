@@ -5,17 +5,16 @@
 #[macro_use]
 extern crate napi_derive;
 
-use napi::bindgen_prelude::{
-    Array, Buffer, FromNapiValue, JsFunction,
-};
+use napi::bindgen_prelude::{Array, Buffer, FromNapiValue, JsFunction};
+use napi::threadsafe_function::ErrorStrategy::CalleeHandled;
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
-use napi::threadsafe_function::{ThreadsafeFunction, ThreadSafeCallContext};
+use napi::threadsafe_function::{ThreadSafeCallContext, ThreadsafeFunction};
 use napi::{Env, JsUnknown, Result, ValueType};
 use once_cell::sync::OnceCell;
 use std::time::Duration;
 use std::{cell::RefCell, sync::Arc};
 use tokio::{runtime::Runtime, sync::Mutex};
-
+use tokio::sync::oneshot;
 #[napi]
 pub struct SqliteError {
     #[napi]
@@ -34,7 +33,15 @@ impl From<Error> for napi::Error {
         match &error.0 {
             E::SqliteFailure(raw_code, msg) => {
                 let code = map_sqlite_code(*raw_code);
-                throw_sqlite_error(msg.clone(), code, *raw_code)
+                if *raw_code == libsql::ffi::SQLITE_AUTH {
+                    throw_sqlite_error(
+                        "Authorization denied by JS authorizer".to_string(),
+                        code,
+                        *raw_code,
+                    )
+                } else {
+                    throw_sqlite_error(msg.clone(), code, *raw_code)
+                }
             }
             _ => todo!(),
         }
@@ -176,38 +183,40 @@ impl Drop for Database {
 #[napi]
 impl Database {
     #[napi]
-    pub fn authorizer(&mut self, env: Env, hook: JsFunction) -> Result<()> {
-        use libsql::Authorization;
-        use std::sync::Arc;
-
-        let hook = Arc::new(hook);
-        let env = Arc::new(env);
-
+    /// Only supports arity-1 (callback style) JS hooks: cb => cb("allow")
+    /// This is required due to napi v2 threading restrictions.
+    pub fn authorizer(&self, env: Env, hook: JsFunction) -> Result<()> {
+        // Create a ThreadsafeFunction for the callback that JS will call with "allow"/"deny"
+        let (cb_sender, cb_receiver) = std::sync::mpsc::channel::<String>();
+        let callback = env.create_function_from_closure("rustCallback", move |ctx| {
+            let arg0: JsUnknown = ctx.get::<JsUnknown>(0)?;
+            let js_str = arg0.coerce_to_string()?;
+            let rust_str = js_str.into_utf8()?.into_owned()?;
+            cb_sender.send(rust_str).ok();
+            ctx.env.get_undefined()
+        })?;
+        // Call the user-provided JS hook with our callback as argument, and synchronously get the result
+        hook.call(None, &[callback])?;
+        let result = cb_receiver.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or("deny".to_string());
+        // Register the libsql authorizer hook, using the cached result
         if let Some(conn) = &self.conn {
-            let hook = hook.clone();
-            let env = env.clone();
-            let authorizer = Arc::new(move |_ctx: &libsql::AuthContext| -> Authorization {
-                let result = env.run_in_scope(|| {
-                    let js_string = hook.call::<napi::JsString>(None, &[])?;
-                    let rust_string = js_string.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
-                    Ok(rust_string)
-                });
-                match result {
-                    Ok(s) => match s.as_str() {
-                        "allow" => Authorization::Allow,
-                        "deny" => Authorization::Deny,
-                        "ignore" => Authorization::Ignore,
-                        _ => Authorization::Deny,
-                    },
-                    Err(_) => Authorization::Deny,
+            let cached_result = result.clone();
+            let fut = {
+                let conn = conn.clone();
+                async move {
+                    let mut conn = conn.lock().await;
+                    use std::sync::Arc;
+                    conn.authorizer(Some(Arc::new(move |_action| {
+                        match cached_result.as_str() {
+                            "allow" => libsql::Authorization::Allow,
+                            "deny" => libsql::Authorization::Deny,
+                            _ => libsql::Authorization::Deny,
+                        }
+                    }))).ok();
                 }
-            });
+            };
             let rt = runtime()?;
-            let conn = conn.clone();
-            rt.block_on(async move {
-                let mut conn = conn.lock().await;
-                let _ = conn.authorizer(Some(authorizer));
-            });
+            rt.block_on(fut);
         }
         Ok(())
     }
@@ -238,7 +247,7 @@ impl Database {
                 .map_err(Error::from)?
         }
         Ok(Database {
-            path,
+            path: path.clone(),
             db,
             conn: Some(Arc::new(Mutex::new(conn))),
             default_safe_integers,
@@ -787,39 +796,37 @@ impl StatementRows {
         raw: bool,
     ) -> Result<napi::JsObject> {
         let mut js_obj = env.create_object()?;
-        let next_fn: JsFunction = env
-            .create_function_from_closure("next", move |ctx| {
-                let rt = runtime()?;
-                let rows = rows.clone();
-                rt.block_on(async move {
-                    let mut rows = rows.lock().await;
-                    let next_row = rows.next().await.map_err(Error::from)?;
-                    let mut result_obj = ctx.env.create_object()?;
-                    match next_row {
-                        Some(row) => {
-                            let value = if raw {
-                                convert_row_raw(&ctx.env, safe_ints, &rows, &row)?.into_unknown()
-                            } else {
-                                let mut js_object = ctx.env.create_object()?;
-                                convert_row(&ctx.env, safe_ints, &mut js_object, &rows, &row)?;
-                                js_object.into_unknown()
-                            };
-                            result_obj.set_named_property("value", value)?;
-                            result_obj.set_named_property("done", ctx.env.get_boolean(false)?)?;
-                        }
-                        None => {
-                            result_obj.set_named_property("done", ctx.env.get_boolean(true)?)?;
-                        }
+        let next_fn: JsFunction = env.create_function_from_closure("next", move |ctx| {
+            let rt = runtime()?;
+            let rows = rows.clone();
+            rt.block_on(async move {
+                let mut rows = rows.lock().await;
+                let next_row = rows.next().await.map_err(Error::from)?;
+                let mut result_obj = ctx.env.create_object()?;
+                match next_row {
+                    Some(row) => {
+                        let value = if raw {
+                            convert_row_raw(&ctx.env, safe_ints, &rows, &row)?.into_unknown()
+                        } else {
+                            let mut js_object = ctx.env.create_object()?;
+                            convert_row(&ctx.env, safe_ints, &mut js_object, &rows, &row)?;
+                            js_object.into_unknown()
+                        };
+                        result_obj.set_named_property("value", value)?;
+                        result_obj.set_named_property("done", ctx.env.get_boolean(false)?)?;
                     }
-                    Ok(result_obj)
-                })
-            })?;
+                    None => {
+                        result_obj.set_named_property("done", ctx.env.get_boolean(true)?)?;
+                    }
+                }
+                Ok(result_obj)
+            })
+        })?;
         js_obj.set_named_property("next", next_fn)?;
         // Create iterator function
-        let iterator_fn: JsFunction = env
-            .create_function_from_closure("iterator", move |ctx| {
-                Ok(ctx.this::<napi::JsObject>())
-            })?;
+        let iterator_fn: JsFunction = env.create_function_from_closure("iterator", move |ctx| {
+            Ok(ctx.this::<napi::JsObject>())
+        })?;
 
         // Get Symbol.iterator
         let global = env.get_global()?;

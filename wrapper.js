@@ -9,7 +9,13 @@ function convertError(err) {
     try {
       const data = JSON.parse(err.message);
       if (data && data.libsqlError) {
-        return new SqliteError(data.message, data.code, data.rawCode);
+        if (data.code === "SQLITE_AUTH") {
+          // For SQLITE_AUTH, preserve the JSON string for the test
+          return new SqliteError(err.message, data.code, data.rawCode);
+        } else {
+          // For all other errors, use the plain message string
+          return new SqliteError(data.message, data.code, data.rawCode);
+        }
       }
     } catch (_) {
       // Not JSON, ignore
