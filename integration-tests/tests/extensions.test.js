@@ -20,7 +20,7 @@ test.serial("Statement.get() returning duration", async (t) => {
 
 test.serial("Database.authorizer() [allow]", async (t) => {
   const db = t.context.db;
-  db.authorizer(cb => cb("allow"));
+  db.authorizer(auth => auth("allow"));
   const stmt = db.prepare("SELECT * FROM users");
   const rows = stmt.all();
   t.is(rows.length, 2);
@@ -28,7 +28,7 @@ test.serial("Database.authorizer() [allow]", async (t) => {
 
 test.serial("Database.authorizer() [ignore]", async (t) => {
   const db = t.context.db;
-  db.authorizer(cb => cb("ignore"));
+  db.authorizer(auth => auth("ignore"));
   const stmt = db.prepare("SELECT * FROM users");
   const rows = stmt.all();
   t.is(rows.length, 0);
@@ -36,7 +36,7 @@ test.serial("Database.authorizer() [ignore]", async (t) => {
 
 test.serial("Database.authorizer() [deny]", async (t) => {
   const db = t.context.db;
-  db.authorizer(cb => cb("deny"));
+  db.authorizer(auth => auth("deny"));
   let error = null;
   try {
     await db.prepare("SELECT * FROM users");
